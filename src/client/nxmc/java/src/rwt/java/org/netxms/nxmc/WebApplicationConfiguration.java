@@ -35,7 +35,6 @@ import org.eclipse.rap.rwt.internal.resources.ContentBuffer;
 import org.eclipse.rap.rwt.service.ResourceLoader;
 import org.eclipse.swt.SWT;
 import org.netxms.client.services.ServiceManager;
-import org.netxms.nxmc.base.windows.ResponsiveShellPhaseListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.secretx33.resourceresolver.PathMatchingResourcePatternResolver;
@@ -58,9 +57,6 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
       }
    };
 
-   /**
-    * @see org.eclipse.rap.rwt.application.ApplicationConfiguration#configure(org.eclipse.rap.rwt.application.Application)
-    */
    @Override
    public void configure(Application app)
    {
@@ -82,16 +78,13 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
       ((ApplicationImpl)app).getApplicationContext().getStartupPage().addJsLibrary("rwt-resources/" + SWT.getVersion() + "/nxmc-library.js");
 
       registerAllResources(app, "vncviewer");
-
       app.addServiceHandler(DownloadServiceHandler.ID, new DownloadServiceHandler());
       app.addServiceHandler(VideoServiceHandler.ID, new VideoServiceHandler());
-
       app.addStyleSheet("org.netxms.themes.light", "/themes/light.css");
-      app.addPhaseListener(new ResponsiveShellPhaseListener());
 
       Map<String, String> properties = new HashMap<>();
       properties.put(WebClient.THEME_ID, "org.netxms.themes.light");
-      app.addEntryPoint("/nxmc-light.app", Startup.class, properties);
+      app.addEntryPoint("/nxmc-light.app", ResponsiveStartup.class, properties);
 
       app.setOperationMode(OperationMode.SWT_COMPATIBILITY);
       app.setExceptionHandler(new ExceptionHandler() {
@@ -123,12 +116,6 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
       ServiceManager.registerClassLoader(getClass().getClassLoader());
    }
 
-   /**
-    * Register all resources starting at given path.
-    *
-    * @param app application
-    * @param basePath base resource path (without leading /)
-    */
    private void registerAllResources(Application app, String basePath)
    {
       logger.debug("Scanning resource path \"{}\"", basePath);
@@ -156,11 +143,6 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
       }
    }
 
-   /**
-    * Add JS library script
-    *
-    * @param path resource path
-    */
    private void addJsLibrary(String path)
    {
       try
