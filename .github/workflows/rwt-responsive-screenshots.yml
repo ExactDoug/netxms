@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p screenshots
-          mvn -B -f src/client/java/netxms-base/pom.xml -DskipTests install |& tee screenshots/netxms-base-build.log
+          mvn -B -f src/java-common/netxms-base/pom.xml -DskipTests install |& tee screenshots/netxms-base-build.log
           mvn -B -f src/client/java/netxms-client/pom.xml -DskipTests install |& tee screenshots/netxms-client-build.log
 
       - name: Build RWT web client
