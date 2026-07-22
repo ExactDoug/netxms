@@ -35,7 +35,6 @@ import org.eclipse.rap.rwt.internal.resources.ContentBuffer;
 import org.eclipse.rap.rwt.service.ResourceLoader;
 import org.eclipse.swt.SWT;
 import org.netxms.client.services.ServiceManager;
-import org.netxms.nxmc.base.windows.ResponsiveShellPhaseListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import io.github.secretx33.resourceresolver.PathMatchingResourcePatternResolver;
@@ -87,11 +86,10 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
       app.addServiceHandler(VideoServiceHandler.ID, new VideoServiceHandler());
 
       app.addStyleSheet("org.netxms.themes.light", "/themes/light.css");
-      app.addPhaseListener(new ResponsiveShellPhaseListener());
 
       Map<String, String> properties = new HashMap<>();
       properties.put(WebClient.THEME_ID, "org.netxms.themes.light");
-      app.addEntryPoint("/nxmc-light.app", Startup.class, properties);
+      app.addEntryPoint("/nxmc-light.app", ResponsiveStartup.class, properties);
 
       app.setOperationMode(OperationMode.SWT_COMPATIBILITY);
       app.setExceptionHandler(new ExceptionHandler() {
