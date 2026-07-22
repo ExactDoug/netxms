@@ -50,10 +50,8 @@ jobs:
           docker compose up -d db agent init server
 
           for i in $(seq 1 120); do
-            if docker compose ps --format json | grep -q '"Service":"server"'; then
-              if (echo > /dev/tcp/127.0.0.1/4701) >/dev/null 2>&1; then
-                break
-              fi
+            if (echo > /dev/tcp/127.0.0.1/4701) >/dev/null 2>&1; then
+              break
             fi
             sleep 2
           done
@@ -63,29 +61,31 @@ jobs:
           test -n "$ADMIN_PASSWORD"
           echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$GITHUB_ENV"
 
-          # Remove the initial forced-password-change flag from the disposable database.
           docker compose exec -T db psql -U netxms -d netxms -c 'UPDATE users SET flags = flags & ~8, grace_logins = 5 WHERE id = 1;'
           docker compose ps
 
       - name: Start PR web client
         run: |
           set -euxo pipefail
-          nohup mvn -B -f src/client/nxmc/java/pom.xml -Pweb -DskipTests jetty:run > /tmp/nxmc-jetty.log 2>&1 &
-          echo $! > /tmp/nxmc-jetty.pid
+          WAR=$(find "$GITHUB_WORKSPACE/src/client/nxmc/java/target" -maxdepth 1 -name '*.war' -print -quit)
+          test -n "$WAR"
+          docker run -d --name nxmc-web --network host \
+            -v "$WAR:/usr/local/tomcat/webapps/ROOT.war:ro" \
+            tomcat:10.1-jdk17-temurin
 
-          for i in $(seq 1 180); do
-            for url in \
-              http://127.0.0.1:8008/nxmc-light.app \
-              http://127.0.0.1:8008/nxmc/nxmc-light.app; do
-              if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
-                echo "NXMC_URL=$url" >> "$GITHUB_ENV"
-                exit 0
-              fi
-            done
+          for i in $(seq 1 120); do
+            if ! docker inspect -f '{{.State.Running}}' nxmc-web 2>/dev/null | grep -q true; then
+              docker logs nxmc-web
+              exit 1
+            fi
+            if curl -fsS --max-time 3 http://127.0.0.1:8080/nxmc-light.app >/dev/null 2>&1; then
+              echo "NXMC_URL=http://127.0.0.1:8080/nxmc-light.app" >> "$GITHUB_ENV"
+              exit 0
+            fi
             sleep 2
           done
 
-          cat /tmp/nxmc-jetty.log
+          docker logs nxmc-web
           exit 1
 
       - name: Install Playwright
@@ -122,11 +122,10 @@ jobs:
             await page.goto(autoUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
             await page.waitForTimeout(15000);
 
-            // Fallback to the visible login form if URL auto-login was not accepted.
-            const passwordInputs = page.locator('input[type="password"]');
             const loginButton = page.getByText(/^Log in$/i).last();
             if (await loginButton.isVisible().catch(() => false)) {
               const textInputs = page.locator('input:not([type="password"])');
+              const passwordInputs = page.locator('input[type="password"]');
               if (await textInputs.count())
                 await textInputs.last().fill('admin');
               if (await passwordInputs.count())
@@ -134,9 +133,6 @@ jobs:
               await loginButton.click();
               await page.waitForTimeout(15000);
             }
-
-            fs.writeFileSync('screenshots/browser.log', consoleMessages.join('\n'));
-            fs.writeFileSync('screenshots/page.html', await page.content());
 
             const captures = [
               ['wide-1440x900.png', 1440, 900],
@@ -151,6 +147,8 @@ jobs:
               await page.screenshot({ path: `screenshots/${name}`, fullPage: false });
             }
 
+            fs.writeFileSync('screenshots/browser.log', consoleMessages.join('\n'));
+            fs.writeFileSync('screenshots/page.html', await page.content());
             await browser.close();
           })().catch(error => {
             console.error(error);
@@ -163,14 +161,14 @@ jobs:
         if: always()
         run: |
           mkdir -p screenshots
-          cp /tmp/nxmc-jetty.log screenshots/jetty.log 2>/dev/null || true
           cp /tmp/netxms-init.log screenshots/netxms-init.log 2>/dev/null || true
+          docker logs nxmc-web > screenshots/tomcat.log 2>&1 || true
           if [ -d /tmp/netxms-docker/deployment-example ]; then
             cd /tmp/netxms-docker/deployment-example
             docker compose ps > "$GITHUB_WORKSPACE/screenshots/docker-ps.txt" 2>&1 || true
             docker compose logs --no-color server > "$GITHUB_WORKSPACE/screenshots/netxms-server.log" 2>&1 || true
           fi
-          find src/client/nxmc/java/target -maxdepth 2 -type f -printf '%p %s bytes\n' > screenshots/build-files.txt 2>/dev/null || true
+          find "$GITHUB_WORKSPACE/src/client/nxmc/java/target" -maxdepth 2 -type f -printf '%p %s bytes\n' > "$GITHUB_WORKSPACE/screenshots/build-files.txt" 2>/dev/null || true
 
       - name: Upload screenshots and logs
         if: always()
