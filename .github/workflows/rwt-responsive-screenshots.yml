@@ -30,6 +30,8 @@ jobs:
           mkdir -p screenshots
           mvn -B -f src/java-common/netxms-base/pom.xml -DskipTests install |& tee screenshots/netxms-base-build.log
           mvn -B -f src/client/java/netxms-client/pom.xml -DskipTests install |& tee screenshots/netxms-client-build.log
+          git clone --depth 1 https://github.com/netxms/zest-rwt.git /tmp/zest-rwt
+          mvn -B -f /tmp/zest-rwt/pom.xml -DskipTests install |& tee screenshots/zest-rwt-build.log
 
       - name: Build RWT web client
         run: |
