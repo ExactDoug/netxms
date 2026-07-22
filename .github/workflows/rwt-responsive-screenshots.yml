@@ -27,13 +27,15 @@ jobs:
       - name: Build NetXMS Java client libraries
         run: |
           set -euxo pipefail
-          mvn -B -f src/client/java/netxms-base/pom.xml -DskipTests install
-          mvn -B -f src/client/java/netxms-client/pom.xml -DskipTests install
+          mkdir -p screenshots
+          mvn -B -f src/client/java/netxms-base/pom.xml -DskipTests install |& tee screenshots/netxms-base-build.log
+          mvn -B -f src/client/java/netxms-client/pom.xml -DskipTests install |& tee screenshots/netxms-client-build.log
 
       - name: Build RWT web client
         run: |
           set -euxo pipefail
-          mvn -B -f src/client/nxmc/java/pom.xml -Pweb -DskipTests package
+          mkdir -p screenshots
+          mvn -B -f src/client/nxmc/java/pom.xml -Pweb -DskipTests package |& tee screenshots/nxmc-web-build.log
 
       - name: Start disposable NetXMS backend
         run: |
