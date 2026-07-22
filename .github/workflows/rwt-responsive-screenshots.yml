@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p screenshots
-          mvn -B -f src/client/nxmc/java/pom.xml -Pweb -DskipTests package |& tee screenshots/nxmc-web-build.log
+          mvn -B -f src/client/nxmc/java/pom.xml -Pweb -Dnetxms.build.disablePlatformProfile=true -DskipTests package |& tee screenshots/nxmc-web-build.log
 
       - name: Start disposable NetXMS backend
         run: |
