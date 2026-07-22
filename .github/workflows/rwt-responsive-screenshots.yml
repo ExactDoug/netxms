@@ -1,0 +1,174 @@
+name: RWT Responsive Shell Screenshots
+
+on:
+  push:
+    branches:
+      - scratch/rwt-responsive-screenshots
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Check out responsive shell branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build NetXMS Java client libraries
+        run: |
+          set -euxo pipefail
+          mvn -B -f src/client/java/netxms-base/pom.xml -DskipTests install
+          mvn -B -f src/client/java/netxms-client/pom.xml -DskipTests install
+
+      - name: Build RWT web client
+        run: |
+          set -euxo pipefail
+          mvn -B -f src/client/nxmc/java/pom.xml -Pweb -DskipTests package
+
+      - name: Start disposable NetXMS backend
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/netxms/docker.git /tmp/netxms-docker
+          cd /tmp/netxms-docker/deployment-example
+          cp .env.example .env
+          sed -i 's/^NETXMS_VERSION=.*/NETXMS_VERSION=latest/' .env
+          sed -i 's/48920:4701/4701:4701/' compose.yaml
+          docker compose up -d db agent init server
+
+          for i in $(seq 1 120); do
+            if docker compose ps --format json | grep -q '"Service":"server"'; then
+              if (echo > /dev/tcp/127.0.0.1/4701) >/dev/null 2>&1; then
+                break
+              fi
+            fi
+            sleep 2
+          done
+
+          docker compose logs --no-color init | tee /tmp/netxms-init.log
+          ADMIN_PASSWORD=$(sed -n 's/.*Password:[[:space:]]*//p' /tmp/netxms-init.log | tail -1 | tr -d '\r')
+          test -n "$ADMIN_PASSWORD"
+          echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$GITHUB_ENV"
+
+          # Remove the initial forced-password-change flag from the disposable database.
+          docker compose exec -T db psql -U netxms -d netxms -c 'UPDATE users SET flags = flags & ~8, grace_logins = 5 WHERE id = 1;'
+          docker compose ps
+
+      - name: Start PR web client
+        run: |
+          set -euxo pipefail
+          nohup mvn -B -f src/client/nxmc/java/pom.xml -Pweb -DskipTests jetty:run > /tmp/nxmc-jetty.log 2>&1 &
+          echo $! > /tmp/nxmc-jetty.pid
+
+          for i in $(seq 1 180); do
+            for url in \
+              http://127.0.0.1:8008/nxmc-light.app \
+              http://127.0.0.1:8008/nxmc/nxmc-light.app; do
+              if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+                echo "NXMC_URL=$url" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            done
+            sleep 2
+          done
+
+          cat /tmp/nxmc-jetty.log
+          exit 1
+
+      - name: Install Playwright
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/rwt-shot
+          cd /tmp/rwt-shot
+          npm init -y
+          npm install playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Capture authenticated responsive screenshots
+        run: |
+          set -euxo pipefail
+          mkdir -p screenshots
+          cat > /tmp/rwt-shot/capture.js <<'EOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({ ignoreHTTPSErrors: true });
+            const page = await context.newPage();
+            const baseUrl = process.env.NXMC_URL;
+            const password = process.env.ADMIN_PASSWORD;
+            const separator = baseUrl.includes('?') ? '&' : '?';
+            const autoUrl = `${baseUrl}${separator}login=admin&password=${encodeURIComponent(password)}&auto=1`;
+
+            const consoleMessages = [];
+            page.on('console', m => consoleMessages.push(`[${m.type()}] ${m.text()}`));
+            page.on('pageerror', e => consoleMessages.push(`[pageerror] ${e.stack || e}`));
+
+            await page.setViewportSize({ width: 1440, height: 900 });
+            await page.goto(autoUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+            await page.waitForTimeout(15000);
+
+            // Fallback to the visible login form if URL auto-login was not accepted.
+            const passwordInputs = page.locator('input[type="password"]');
+            const loginButton = page.getByText(/^Log in$/i).last();
+            if (await loginButton.isVisible().catch(() => false)) {
+              const textInputs = page.locator('input:not([type="password"])');
+              if (await textInputs.count())
+                await textInputs.last().fill('admin');
+              if (await passwordInputs.count())
+                await passwordInputs.last().fill(password);
+              await loginButton.click();
+              await page.waitForTimeout(15000);
+            }
+
+            fs.writeFileSync('screenshots/browser.log', consoleMessages.join('\n'));
+            fs.writeFileSync('screenshots/page.html', await page.content());
+
+            const captures = [
+              ['wide-1440x900.png', 1440, 900],
+              ['compact-900x900.png', 900, 900],
+              ['narrow-390x844.png', 390, 844],
+              ['landscape-phone-844x390.png', 844, 390]
+            ];
+
+            for (const [name, width, height] of captures) {
+              await page.setViewportSize({ width, height });
+              await page.waitForTimeout(2500);
+              await page.screenshot({ path: `screenshots/${name}`, fullPage: false });
+            }
+
+            await browser.close();
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          EOF
+          NODE_PATH=/tmp/rwt-shot/node_modules node /tmp/rwt-shot/capture.js
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          mkdir -p screenshots
+          cp /tmp/nxmc-jetty.log screenshots/jetty.log 2>/dev/null || true
+          cp /tmp/netxms-init.log screenshots/netxms-init.log 2>/dev/null || true
+          if [ -d /tmp/netxms-docker/deployment-example ]; then
+            cd /tmp/netxms-docker/deployment-example
+            docker compose ps > "$GITHUB_WORKSPACE/screenshots/docker-ps.txt" 2>&1 || true
+            docker compose logs --no-color server > "$GITHUB_WORKSPACE/screenshots/netxms-server.log" 2>&1 || true
+          fi
+          find src/client/nxmc/java/target -maxdepth 2 -type f -printf '%p %s bytes\n' > screenshots/build-files.txt 2>/dev/null || true
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwt-responsive-shell-screenshots
+          path: screenshots
+          if-no-files-found: warn
