@@ -159,6 +159,7 @@ public abstract class AbstractNetworkMapView extends ObjectView implements ISele
 	protected boolean objectMoveLocked = true; //default false for adhock maps and true for predefined
 	protected boolean readOnly = true;
 	protected boolean saveSchedulted = false;
+   private boolean initialCenteringDone = false; // Viewport has been centered on content once, when the map first had any
 
 	protected Action actionShowStatusIcon;
 	protected Action actionShowStatusBackground;
@@ -468,19 +469,6 @@ public abstract class AbstractNetworkMapView extends ObjectView implements ISele
    {
       super.postContentCreate();
       refresh();
-
-      // Center the viewport on the map content, once, when the map is first opened. A map canvas is
-      // usually far larger than the area its elements occupy and the viewport starts at the canvas
-      // origin, so without this the first screen is often empty.
-      //
-      // Deferred: at this point the control has not been through a layout pass, so the viewport has
-      // no size yet and centering would be a no-op. Deliberately done here and not in refresh(),
-      // which runs on every subsequent refresh and would pull the viewport away from wherever the
-      // user had scrolled to.
-      viewer.getControl().getDisplay().asyncExec(() -> {
-         if (!viewer.getControl().isDisposed())
-            viewer.centerOnContent();
-      });
    }
 
    /**
@@ -516,7 +504,36 @@ public abstract class AbstractNetworkMapView extends ObjectView implements ISele
 		   }
 		}
       viewer.setSelection(new StructuredSelection(newSelection));
+      scheduleInitialCentering();
 	}
+
+   /**
+    * Center the viewport on the map's content the first time there is any content to center on.
+    *
+    * A map canvas is usually far larger than the area its elements occupy and the viewport opens at
+    * the canvas origin, so without this the first screen a user sees is frequently empty.
+    *
+    * This cannot simply be done when the view is created. Map content arrives asynchronously - when
+    * the map object is not yet available, buildMapPage() produces an empty page and the real content
+    * only appears on a later refresh, driven by the object synchronization job. So this is called
+    * from every refresh but acts at most once, on the first one that actually yields elements.
+    *
+    * Acting only once is the point: centering on every refresh would pull the viewport away from
+    * wherever the user had scrolled to.
+    */
+   protected void scheduleInitialCentering()
+   {
+      if (initialCenteringDone)
+         return;
+
+      // Deferred, because the layout pass for freshly set input has not run yet at this point.
+      viewer.getControl().getDisplay().asyncExec(() -> {
+         if (initialCenteringDone || viewer.getControl().isDisposed())
+            return;
+         if (viewer.centerOnContent())
+            initialCenteringDone = true;
+      });
+   }
 
 	/**
 	 * Replace current map page with new one
