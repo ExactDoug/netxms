@@ -35,9 +35,14 @@
 	/**
 	 * Long press delay in ms. Deliberately has NO upper cutoff - the menu opens on this timer while
 	 * the finger is still down, so holding longer never defeats it. The vendored longpress.js used
-	 * 500 ms and fired on release; 500 ms proved too eager once the menu opened on press instead.
+	 * 500 ms and fired on release; 500 ms proved too eager once the menu opened on press instead,
+	 * and 1000 ms still read slightly quick on hardware.
+	 *
+	 * Any value above LONGPRESS_JS_THRESHOLD leaves a window in which longpress.js would otherwise
+	 * open the menu first, so this constant cannot be raised without the touchEndCapture()
+	 * suppression below being functional - see the startTime note there.
 	 */
-	var LONG_PRESS_DELAY = 1000;
+	var LONG_PRESS_DELAY = 1250;
 
 	/**
 	 * The threshold longpress.js uses (its own `duration`). It opens the context menu on release for
@@ -228,6 +233,7 @@
 					}
 					this.resetGesture();
 					this.tracking = true;
+					this.startTime = new Date().getTime();
 				}
 				this.pinching = true;
 				this.consumed = true;
@@ -244,6 +250,7 @@
 
 			this.resetGesture();
 			this.tracking = true;
+			this.startTime = new Date().getTime();
 			var t = e.touches[0];
 			this.startX = this.lastX = t.clientX;
 			this.startY = this.lastY = t.clientY;
@@ -306,8 +313,16 @@
 		/**
 		 * Capture-phase end of touch. If this touch was claimed as a pan, a pinch or a long press we
 		 * already handled, stop it here so that longpress.js - which listens on the touch target, and
-		 * so would otherwise run first - cannot also act on it. A plain tap is never suppressed, so
-		 * tap-to-select and RAP's click synthesis are untouched.
+		 * so would otherwise run first - cannot also act on it.
+		 *
+		 * The `held` arm is what covers the window between longpress.js's own threshold and ours, in
+		 * which the touch is too old for longpress.js to ignore but too young for our timer to have
+		 * claimed it. It depends on startTime being stamped in touchStart: without that stamp `held`
+		 * is always 0, this arm is dead, and longpress.js owns that entire window.
+		 *
+		 * A quick tap is below the threshold and is never suppressed, so ordinary tap-to-select and
+		 * RAP's click synthesis are untouched. A deliberately SLOW tap is suppressed, and losing its
+		 * selection is the known cost of closing the window.
 		 */
 		touchEndCapture : function(e) {
 			var held = (this.startTime > 0) ? (new Date().getTime() - this.startTime) : 0;
