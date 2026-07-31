@@ -16,7 +16,7 @@
  * (a slow pan opens it), and it unhooks its own touchend listener after
  * duration * 4 ms, so a press held past ~2 s does nothing at all. Rather than
  * patch the vendored file, this handler classifies first and suppresses
- * longpress.js for any touch it has claimed - see suppressLongPress().
+ * longpress.js for any touch it has claimed - see touchEndCapture().
  *
  * License: MIT License - http://www.opensource.org/licenses/mit-license.php
  * Copyright (c) 2026 Raden Solutions
@@ -59,9 +59,97 @@
 		events : [ "zoom", "pan" ]
 	});
 
+	/**
+	 * Registry of live MapInput instances, keyed by the RWT id of the widget they serve.
+	 *
+	 * Listeners are installed ONCE on the document, at script load, rather than on each map's DOM
+	 * node when its widget is created. Binding to the node was wrong in both directions: a gesture
+	 * made before the binding arrived reached no listener at all and Safari took it as a whole page
+	 * zoom, and a node replaced by a re-render left the listeners on a detached element. Ownership
+	 * is therefore resolved per event, by walking up from the event target. While no map exists the
+	 * registry is empty and these listeners do nothing anywhere in the UI.
+	 */
+	var instances = {};
+	var listenersInstalled = false;
+
+	/**
+	 * Find the MapInput instance owning an event target, if any, and remember the widget node so
+	 * that coordinates can be taken relative to it.
+	 */
+	var instanceCount = 0;
+
+	var findOwner = function(target) {
+		if (instanceCount === 0) {
+			return null; // no map open anywhere - do not walk the tree on every pointer move
+		}
+		while (target != null && target !== document) {
+			if (target.rwtWidget != null) {
+				var owner = instances[target.rwtWidget._rwtId];
+				if (owner) {
+					owner.node = target;
+					return owner;
+				}
+			}
+			target = target.parentNode;
+		}
+		return null;
+	};
+
+	var installListeners = function() {
+		if (listenersInstalled || !document.body) {
+			return;
+		}
+		listenersInstalled = true;
+
+		var dispatch = function(method) {
+			return function(e) {
+				var owner = findOwner(e.target);
+				if (owner != null) {
+					owner[method](e);
+				}
+			};
+		};
+
+		// Capture phase throughout, so these run before longpress.js's listener on the touch target
+		// and before RAP's own handlers on document.body, which are registered in the bubble phase.
+		document.addEventListener("touchstart", dispatch("touchStart"), { capture : true, passive : false });
+		document.addEventListener("touchmove", dispatch("touchMove"), { capture : true, passive : false });
+		document.addEventListener("touchend", dispatch("touchEndCapture"), { capture : true, passive : false });
+		document.addEventListener("touchcancel", dispatch("touchEndCapture"), { capture : true, passive : false });
+		document.addEventListener("wheel", dispatch("wheel"), { capture : true, passive : false });
+		document.addEventListener("pointerdown", dispatch("pointerDown"), true);
+		document.addEventListener("pointermove", dispatch("pointerMove"), true);
+		document.addEventListener("pointerup", dispatch("pointerUp"), true);
+		document.addEventListener("pointercancel", dispatch("pointerUp"), true);
+
+		// Safari raises these alongside the touch stream for a pinch, and they are what actually
+		// drive whole page zoom on iOS. Cancel them only over a map we own. Cancelling them
+		// unconditionally is precisely the defect reported as eclipse-rap#398, so the ownership
+		// test is not optional.
+		var cancelGesture = function(e) {
+			if (findOwner(e.target) != null) {
+				e.preventDefault();
+			}
+		};
+		document.addEventListener("gesturestart", cancelGesture, { capture : true, passive : false });
+		document.addEventListener("gesturechange", cancelGesture, { capture : true, passive : false });
+		document.addEventListener("gestureend", cancelGesture, { capture : true, passive : false });
+	};
+
+	if (document.body) {
+		installListeners();
+	} else {
+		document.addEventListener("DOMContentLoaded", installListeners);
+	}
+
 	netxms.MapInput = function(properties) {
 		this.parentId = properties.parent;
 		this.node = null;
+		if (!instances[this.parentId]) {
+			instanceCount++;
+		}
+		instances[this.parentId] = this;
+		installListeners();
 
 		// Coalescing state - everything is accumulated here and flushed once per
 		// animation frame. The coalescing MUST happen in the browser: each notify
@@ -77,71 +165,9 @@
 		this.panPending = false;
 
 		this.resetGesture();
-
-		var self = this;
-		this.renderHandler = function() {
-			self.attach();
-		};
-		rap.on("render", this.renderHandler);
-		this.attach();
 	};
 
 	netxms.MapInput.prototype = {
-
-		/**
-		 * Locate the DOM node of the parent widget and attach listeners to it.
-		 *
-		 * The node is found by the same scan rwt-util.js uses (rwtWidget._rwtId),
-		 * which was confirmed on hardware to resolve the map widget div that the
-		 * map's <canvas> lives inside. It may not exist yet when this object is
-		 * created, so this is retried on every render until it succeeds.
-		 */
-		attach : function() {
-			if (this.node !== null) {
-				return;
-			}
-
-			var node = null;
-			var elements = document.getElementsByTagName("div");
-			for(var i = 0; i < elements.length; i++) {
-				if (elements[i].rwtWidget != null && elements[i].rwtWidget._rwtId == this.parentId) {
-					node = elements[i];
-					break;
-				}
-			}
-			if (node === null) {
-				return;
-			}
-
-			this.node = node;
-			rap.off("render", this.renderHandler);
-
-			var self = this;
-			this.onTouchStart = function(e) { self.touchStart(e); };
-			this.onTouchMove = function(e) { self.touchMove(e); };
-			this.onTouchEnd = function(e) { self.touchEnd(e); };
-			this.onTouchEndCapture = function(e) { self.suppressLongPress(e); };
-			this.onWheel = function(e) { self.wheel(e); };
-			this.onPointerDown = function(e) { self.pointerDown(e); };
-			this.onPointerMove = function(e) { self.pointerMove(e); };
-			this.onPointerUp = function(e) { self.pointerUp(e); };
-
-			// Capture phase, so this runs before longpress.js's listener on the
-			// canvas itself (target phase) and before RAP's on document.body
-			// (bubble phase).
-			node.addEventListener("touchend", this.onTouchEndCapture, true);
-			node.addEventListener("touchcancel", this.onTouchEndCapture, true);
-
-			node.addEventListener("touchstart", this.onTouchStart, { passive : false });
-			node.addEventListener("touchmove", this.onTouchMove, { passive : false });
-			node.addEventListener("touchend", this.onTouchEnd, { passive : false });
-			node.addEventListener("touchcancel", this.onTouchEnd, { passive : false });
-			node.addEventListener("wheel", this.onWheel, { passive : false });
-			node.addEventListener("pointerdown", this.onPointerDown, false);
-			node.addEventListener("pointermove", this.onPointerMove, false);
-			node.addEventListener("pointerup", this.onPointerUp, false);
-			node.addEventListener("pointercancel", this.onPointerUp, false);
-		},
 
 		/**
 		 * True if the event started on the map drawing surface rather than on a
@@ -267,24 +293,21 @@
 			e.preventDefault();
 		},
 
-		touchEnd : function(e) {
+		/**
+		 * Capture-phase end of touch. If this touch was claimed as a pan, a pinch or a long press we
+		 * already handled, stop it here so that longpress.js - which listens on the touch target, and
+		 * so would otherwise run first - cannot also act on it. A plain tap is never suppressed, so
+		 * tap-to-select and RAP's click synthesis are untouched.
+		 */
+		touchEndCapture : function(e) {
+			if (this.consumed) {
+				e.stopPropagation();
+			}
 			if (e.touches && e.touches.length > 0) {
 				return;
 			}
 			this.flush();
 			this.resetGesture();
-		},
-
-		/**
-		 * Capture-phase handler. If this touch was claimed as a pan, a pinch or a
-		 * long press we already handled, stop it here so that longpress.js (which
-		 * listens on the touch target) cannot also act on it. A plain tap is never
-		 * suppressed, so tap-to-select and RAP's click synthesis are untouched.
-		 */
-		suppressLongPress : function(e) {
-			if (this.consumed) {
-				e.stopPropagation();
-			}
 		},
 
 		openContextMenu : function(target, x, y) {
@@ -430,21 +453,13 @@
 				window.cancelAnimationFrame(this.frame);
 				this.frame = null;
 			}
-			rap.off("render", this.renderHandler);
-			if (this.node !== null) {
-				this.node.removeEventListener("touchend", this.onTouchEndCapture, true);
-				this.node.removeEventListener("touchcancel", this.onTouchEndCapture, true);
-				this.node.removeEventListener("touchstart", this.onTouchStart);
-				this.node.removeEventListener("touchmove", this.onTouchMove);
-				this.node.removeEventListener("touchend", this.onTouchEnd);
-				this.node.removeEventListener("touchcancel", this.onTouchEnd);
-				this.node.removeEventListener("wheel", this.onWheel);
-				this.node.removeEventListener("pointerdown", this.onPointerDown);
-				this.node.removeEventListener("pointermove", this.onPointerMove);
-				this.node.removeEventListener("pointerup", this.onPointerUp);
-				this.node.removeEventListener("pointercancel", this.onPointerUp);
-				this.node = null;
+			// The document listeners are shared and stay installed; dropping out of the registry is
+			// what stops events being routed here.
+			if (instances[this.parentId] === this) {
+				delete instances[this.parentId];
+				instanceCount--;
 			}
+			this.node = null;
 		}
 	};
 }());
