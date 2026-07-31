@@ -816,6 +816,46 @@ public class ExtendedGraphViewer extends GraphViewer
       graph.getViewport().setViewLocation(newViewLocation);
    }
 
+   /**
+    * Center the viewport on the map's content.
+    *
+    * A map's canvas is normally much larger than the area its elements actually occupy, and the
+    * viewport opens at the canvas origin, so the first screen is frequently empty while the content
+    * sits somewhere else entirely. This scrolls the viewport as though the user had dragged the
+    * content into the middle of it. It changes the scroll position only - the zoom level is left
+    * exactly as it was.
+    *
+    * Centering is computed from the bounding box of the elements themselves, not from the canvas or
+    * the background layer, because it is the elements the user is looking for.
+    *
+    * Has no effect if the map has no elements, or if it is called before the control has been laid
+    * out and the viewport therefore has no size yet.
+    */
+   public void centerOnContent()
+   {
+      org.eclipse.draw2d.geometry.Rectangle viewportArea = graph.getViewport().getClientArea();
+      if ((viewportArea.width <= 0) || (viewportArea.height <= 0))
+         return; // not laid out yet - nothing sensible to center within
+
+      org.eclipse.draw2d.geometry.Rectangle contentArea = null;
+      for(Object o : graph.getNodes())
+      {
+         if (!(o instanceof CGraphNode))
+            continue;
+         CGraphNode n = (CGraphNode)o;
+         org.eclipse.draw2d.geometry.Rectangle nodeArea = new org.eclipse.draw2d.geometry.Rectangle(n.getLocation(), n.getSize());
+         contentArea = (contentArea == null) ? nodeArea : contentArea.union(nodeArea);
+      }
+      if (contentArea == null)
+         return; // empty map
+
+      // Element coordinates are unscaled, the viewport works in scaled ones - same conversion the
+      // search-and-reveal path uses.
+      org.eclipse.draw2d.geometry.Point center = contentArea.getCenter();
+      center.performScale(getZoom());
+      setViewLocationClamped(center.getTranslated(-viewportArea.width / 2, -viewportArea.height / 2));
+   }
+
 	/**
 	 * Zoom to next level
 	 */

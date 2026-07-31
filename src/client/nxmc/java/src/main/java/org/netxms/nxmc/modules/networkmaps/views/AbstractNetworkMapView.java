@@ -468,6 +468,19 @@ public abstract class AbstractNetworkMapView extends ObjectView implements ISele
    {
       super.postContentCreate();
       refresh();
+
+      // Center the viewport on the map content, once, when the map is first opened. A map canvas is
+      // usually far larger than the area its elements occupy and the viewport starts at the canvas
+      // origin, so without this the first screen is often empty.
+      //
+      // Deferred: at this point the control has not been through a layout pass, so the viewport has
+      // no size yet and centering would be a no-op. Deliberately done here and not in refresh(),
+      // which runs on every subsequent refresh and would pull the viewport away from wherever the
+      // user had scrolled to.
+      viewer.getControl().getDisplay().asyncExec(() -> {
+         if (!viewer.getControl().isDisposed())
+            viewer.centerOnContent();
+      });
    }
 
    /**
