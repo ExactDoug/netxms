@@ -178,14 +178,23 @@
 			if (e.touches.length > 1) {
 				// Second finger down - this is a pinch, never a press.
 				this.cancelLongPress();
-				if (this.tracking) {
-					this.pinching = true;
-					this.consumed = true;
-					this.lastDistance = this.distance(e.touches);
-					var mid = this.midpoint(e.touches);
-					this.lastX = mid.x;
-					this.lastY = mid.y;
+				if (!this.tracking) {
+					// Both fingers landed together closely enough that the first touchstart we
+					// saw already carried two touches, so there was never a single touch event
+					// to begin tracking on. Without this the gesture goes unclaimed and Safari
+					// takes it as a page zoom.
+					if (!this.onCanvas(e.target) && !this.onCanvas(e.touches[0].target)) {
+						return;
+					}
+					this.resetGesture();
+					this.tracking = true;
 				}
+				this.pinching = true;
+				this.consumed = true;
+				this.lastDistance = this.distance(e.touches);
+				var mid = this.midpoint(e.touches);
+				this.lastX = mid.x;
+				this.lastY = mid.y;
 				return;
 			}
 
