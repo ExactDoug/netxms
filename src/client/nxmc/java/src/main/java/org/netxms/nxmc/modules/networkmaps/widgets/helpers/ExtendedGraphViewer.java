@@ -84,6 +84,8 @@ import org.netxms.nxmc.modules.worldmap.tools.TileSet;
 import org.netxms.nxmc.resources.ResourceManager;
 import org.netxms.nxmc.resources.ThemeEngine;
 import org.netxms.nxmc.tools.ColorCache;
+import org.netxms.nxmc.tools.MapInputListener;
+import org.netxms.nxmc.tools.WidgetHelper;
 import org.xnap.commons.i18n.I18n;
 
 /**
@@ -229,21 +231,7 @@ public class ExtendedGraphViewer extends GraphViewer
                return;
 
             backgroundDragged = true;
-            org.eclipse.draw2d.geometry.Point newViewLocation = backgroundDragStartViewLocation.getCopy().translate(dx, dy);
-            if (newViewLocation.x < 0)
-               newViewLocation.x = 0;
-            if (newViewLocation.y < 0)
-               newViewLocation.y = 0;
-
-            Dimension scaledSize = backgroundLayer.getSize();
-            scaledSize.performScale(getZoom());
-            org.eclipse.draw2d.geometry.Rectangle viewportArea = graph.getViewport().getClientArea();
-            if (newViewLocation.x > scaledSize.width - viewportArea.width)
-               newViewLocation.x = scaledSize.width - viewportArea.width;
-            if (newViewLocation.y > scaledSize.height - viewportArea.height)
-               newViewLocation.y = scaledSize.height - viewportArea.height;
-
-            graph.getViewport().setViewLocation(newViewLocation);
+            setViewLocationClamped(backgroundDragStartViewLocation.getCopy().translate(dx, dy));
          }
       });
       backgroundLayer.addMouseListener(new MouseListener() {
@@ -326,6 +314,41 @@ public class ExtendedGraphViewer extends GraphViewer
          public void zoomChanged(double zoom)
          {
             ExtendedGraphViewer.this.refresh(true);
+         }
+      });
+
+      // Continuous pointer input (pinch, touch drag, mouse wheel, mouse drag). On the desktop client this is a no-op, because SWT
+      // delivers mouse move and mouse wheel to the canvas directly. In the web client RAP delivers neither, so gestures are
+      // classified and coalesced in the browser and arrive here already throttled to animation frame cadence.
+      WidgetHelper.attachMapInputListener(graph, new MapInputListener() {
+         @Override
+         public void onZoom(double factor, int x, int y)
+         {
+            double currentZoom = getZoom();
+            org.eclipse.draw2d.geometry.Point viewLocation = graph.getViewport().getViewLocation().getCopy();
+
+            zoomTo(currentZoom * factor); // ZoomManager clamps to the range derived from zoomLevels
+
+            // Keep the focal point of the gesture stationary. The applied factor is recomputed from the zoom that was actually
+            // accepted, so this stays correct when the zoom was clamped.
+            double appliedFactor = getZoom() / currentZoom;
+            if (appliedFactor != 1.0)
+            {
+               int nx = (int)Math.round((viewLocation.x + x) * appliedFactor) - x;
+               int ny = (int)Math.round((viewLocation.y + y) * appliedFactor) - y;
+               setViewLocationClamped(new org.eclipse.draw2d.geometry.Point(nx, ny));
+            }
+         }
+
+         @Override
+         public void onPan(int dx, int dy)
+         {
+            // Moving the pointer right moves the content right, so the view location moves the opposite way.
+            setViewLocationClamped(graph.getViewport().getViewLocation().getCopy().translate(-dx, -dy));
+
+            // The Draw2D drag tracker may also be running for this same mouse gesture; it computes its delta independently from
+            // the cursor location and would double the movement. This path wins.
+            backgroundDragActive = false;
          }
       });
 
@@ -765,6 +788,33 @@ public class ExtendedGraphViewer extends GraphViewer
 			getFactory().refresh(graph, element, updateLabels);
 		}
 	}
+
+   /**
+    * Set viewport location, clamped so that the view cannot be scrolled outside the map.
+    *
+    * @param newViewLocation requested view location
+    */
+   private void setViewLocationClamped(org.eclipse.draw2d.geometry.Point newViewLocation)
+   {
+      if (newViewLocation.x < 0)
+         newViewLocation.x = 0;
+      if (newViewLocation.y < 0)
+         newViewLocation.y = 0;
+
+      Dimension scaledSize = backgroundLayer.getSize();
+      scaledSize.performScale(getZoom());
+      org.eclipse.draw2d.geometry.Rectangle viewportArea = graph.getViewport().getClientArea();
+      if (newViewLocation.x > scaledSize.width - viewportArea.width)
+         newViewLocation.x = scaledSize.width - viewportArea.width;
+      if (newViewLocation.y > scaledSize.height - viewportArea.height)
+         newViewLocation.y = scaledSize.height - viewportArea.height;
+      if (newViewLocation.x < 0)
+         newViewLocation.x = 0;
+      if (newViewLocation.y < 0)
+         newViewLocation.y = 0;
+
+      graph.getViewport().setViewLocation(newViewLocation);
+   }
 
 	/**
 	 * Zoom to next level

@@ -106,6 +106,7 @@ import org.netxms.nxmc.base.widgets.LabeledText;
 import org.netxms.nxmc.base.widgets.SortableTableViewer;
 import org.netxms.nxmc.base.widgets.SortableTreeViewer;
 import org.netxms.nxmc.base.widgets.StyledText;
+import org.netxms.nxmc.base.widgets.helpers.MapInputWidget;
 import org.netxms.nxmc.base.widgets.helpers.MsgProxyWidget;
 import org.netxms.nxmc.localization.LocalizationHelper;
 import org.netxms.nxmc.resources.ThemeEngine;
@@ -1487,6 +1488,19 @@ public class WidgetHelper
          }
       }
       return sb.toString();
+   }
+
+   /**
+    * Attach map input listener to a map canvas (compatibility layer for RAP). RAP delivers no server side mouse move or mouse wheel
+    * events, so continuous input is supplied by the netxms.MapInput client side custom widget, which classifies gestures in the
+    * browser and coalesces them to animation frame cadence before sending anything.
+    *
+    * @param control map canvas
+    * @param listener listener to receive classified gestures
+    */
+   public static void attachMapInputListener(Control control, MapInputListener listener)
+   {
+      new MapInputWidget(control, listener);
    }
 
    /**
