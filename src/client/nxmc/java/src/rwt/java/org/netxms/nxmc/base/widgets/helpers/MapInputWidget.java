@@ -29,6 +29,8 @@ import org.eclipse.swt.events.DisposeEvent;
 import org.eclipse.swt.events.DisposeListener;
 import org.eclipse.swt.widgets.Control;
 import org.netxms.nxmc.tools.MapInputListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Server side half of the map input custom widget. Receives classified gestures from mapinput.js and dispatches them to a
@@ -40,6 +42,8 @@ import org.netxms.nxmc.tools.MapInputListener;
  */
 public class MapInputWidget
 {
+   private static final Logger logger = LoggerFactory.getLogger(MapInputWidget.class);
+
    private static final String EVENT_ZOOM = "zoom";
    private static final String EVENT_PAN = "pan";
 
@@ -62,7 +66,17 @@ public class MapInputWidget
          @Override
          public void handleNotify(String event, JsonObject properties)
          {
-            handleEvent(event, properties);
+            // A gesture arrives on the RAP request thread. If a handler throws - most plausibly because the map view is being
+            // torn down while a touch is still in flight - the exception would escape into RAP's operation dispatch. Contain it
+            // here: a dropped gesture is recoverable, a broken session is not, and a map is often left open for days in kiosk mode.
+            try
+            {
+               handleEvent(event, properties);
+            }
+            catch(Exception e)
+            {
+               logger.debug("Exception while handling map input event \"" + event + "\"", e);
+            }
          }
       });
       remoteObject.set("parent", WidgetUtil.getId(control));
