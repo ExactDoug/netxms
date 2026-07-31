@@ -1494,6 +1494,17 @@ public class WidgetHelper
    }
 
    /**
+    * Attach map input listener to a map canvas (compatibility layer for RAP). Does nothing on the desktop client, where SWT
+    * delivers mouse move and mouse wheel events to the canvas directly.
+    *
+    * @param control map canvas
+    * @param listener listener to receive classified gestures
+    */
+   public static void attachMapInputListener(Control control, MapInputListener listener)
+   {
+   }
+
+   /**
     * Attach mouse move listener to composite (compatibility layer for RAP).
     *
     * @param control control to attach listener to
