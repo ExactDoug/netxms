@@ -32,8 +32,12 @@
 	/** Movement in px before a touch stops being a candidate tap/long press. */
 	var MOVE_THRESHOLD = 10;
 
-	/** Long press delay in ms. Deliberately has NO upper cutoff. */
-	var LONG_PRESS_DELAY = 500;
+	/**
+	 * Long press delay in ms. Deliberately has NO upper cutoff - the menu opens on this timer while
+	 * the finger is still down, so holding longer never defeats it. The vendored longpress.js used
+	 * 500 ms and fired on release; 500 ms proved too eager once the menu opened on press instead.
+	 */
+	var LONG_PRESS_DELAY = 1000;
 
 	/** Wheel notch to zoom factor. */
 	var WHEEL_FACTOR = 0.0015;
