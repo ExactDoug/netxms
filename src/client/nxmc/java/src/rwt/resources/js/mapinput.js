@@ -39,6 +39,15 @@
 	 */
 	var LONG_PRESS_DELAY = 1000;
 
+	/**
+	 * The threshold longpress.js uses (its own `duration`). It opens the context menu on release for
+	 * any touch that lasted at least this long, and we cannot reach into its closure to stop it. So
+	 * every touch at least this old must be suppressed here, not merely those our own long press
+	 * timer has already claimed - otherwise longpress.js owns the whole window between its threshold
+	 * and ours, and raising LONG_PRESS_DELAY only widens the window in which it wins.
+	 */
+	var LONGPRESS_JS_THRESHOLD = 500;
+
 	/** Wheel notch to zoom factor. */
 	var WHEEL_FACTOR = 0.0015;
 
@@ -194,6 +203,7 @@
 			this.lastX = 0;
 			this.lastY = 0;
 			this.lastDistance = 0;
+			this.startTime = 0;
 			this.cancelLongPress();
 		},
 
@@ -300,7 +310,8 @@
 		 * tap-to-select and RAP's click synthesis are untouched.
 		 */
 		touchEndCapture : function(e) {
-			if (this.consumed) {
+			var held = (this.startTime > 0) ? (new Date().getTime() - this.startTime) : 0;
+			if (this.consumed || held >= LONGPRESS_JS_THRESHOLD) {
 				e.stopPropagation();
 			}
 			if (e.touches && e.touches.length > 0) {
