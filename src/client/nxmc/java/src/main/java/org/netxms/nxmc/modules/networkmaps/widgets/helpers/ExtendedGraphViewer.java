@@ -828,14 +828,19 @@ public class ExtendedGraphViewer extends GraphViewer
     * Centering is computed from the bounding box of the elements themselves, not from the canvas or
     * the background layer, because it is the elements the user is looking for.
     *
-    * Has no effect if the map has no elements, or if it is called before the control has been laid
-    * out and the viewport therefore has no size yet.
+    * Does nothing if the map has no elements yet, or if the control has not been laid out and the
+    * viewport therefore has no size yet. Map content arrives asynchronously, so both are normal
+    * transient states rather than errors.
+    *
+    * @return true if the viewport was actually centered, false if there was nothing to center on yet
     */
-   public void centerOnContent()
+   public boolean centerOnContent()
    {
+      // The viewport client area is the area visible inside the scrollbars, excluding the space they
+      // occupy, which is what the content has to be centered within.
       org.eclipse.draw2d.geometry.Rectangle viewportArea = graph.getViewport().getClientArea();
       if ((viewportArea.width <= 0) || (viewportArea.height <= 0))
-         return; // not laid out yet - nothing sensible to center within
+         return false; // not laid out yet - nothing sensible to center within
 
       org.eclipse.draw2d.geometry.Rectangle contentArea = null;
       for(Object o : graph.getNodes())
@@ -847,13 +852,15 @@ public class ExtendedGraphViewer extends GraphViewer
          contentArea = (contentArea == null) ? nodeArea : contentArea.union(nodeArea);
       }
       if (contentArea == null)
-         return; // empty map
+         return false; // no content yet - it arrives asynchronously
 
       // Element coordinates are unscaled, the viewport works in scaled ones - same conversion the
       // search-and-reveal path uses.
       org.eclipse.draw2d.geometry.Point center = contentArea.getCenter();
       center.performScale(getZoom());
-      setViewLocationClamped(center.getTranslated(-viewportArea.width / 2, -viewportArea.height / 2));
+      org.eclipse.draw2d.geometry.Point target = center.getTranslated(-viewportArea.width / 2, -viewportArea.height / 2);
+      setViewLocationClamped(target);
+      return true;
    }
 
 	/**
