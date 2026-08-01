@@ -433,6 +433,19 @@ StructArray<BridgePort> *CiscoDeviceDriver::getBridgePorts(SNMP_Transport *snmp,
                for(int j = 0; j < bridgePorts->size(); j++)
                {
                   BridgePort *p = bridgePorts->get(j);
+                  if (p->ifIndex == ifIndex)
+                  {
+                     if (p->portNumber != portNumber)
+                     {
+                        // Same interface already mapped from a different bridge port number. Mapping has to stay
+                        // injective in both directions: Node::getInterfaceList() applies these by interface index
+                        // and takes the last match, so accepting this would overwrite an already correct bridge
+                        // port number on the interface object - including one read from the default context.
+                        nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 4, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): bridge port %u in VLAN %u maps to ifIndex %u which is already mapped from bridge port %u"),
+                           node->getName(), node->getId(), portNumber, vlanId, ifIndex, p->portNumber);
+                     }
+                     return SNMP_ERR_SUCCESS;
+                  }
                   if (p->portNumber == portNumber)
                   {
                      if (p->ifIndex != ifIndex)
@@ -442,8 +455,11 @@ StructArray<BridgePort> *CiscoDeviceDriver::getBridgePorts(SNMP_Transport *snmp,
                         //
                         // A conflict means bridge port numbering on this device is VLAN scoped rather than global.
                         // BridgePort and ForwardingDatabase::IfIndexFromPort are both keyed by port number alone, so
-                        // such a device cannot be represented correctly here - resolving it properly requires VLAN
-                        // qualification in the driver API, not just in this driver. Log it so the case is visible.
+                        // a VLAN scoped device cannot be fully represented by this method's return value. FDB
+                        // resolution for such a device can still be made correct without changing the driver API,
+                        // by resolving interface indexes inside each VLAN context during forwarding database
+                        // retrieval and setting ForwardingDatabaseEntry::ifIndex directly - fdb.cpp only falls back
+                        // to bridge port lookup when that field is left at 0. Log the conflict so the case is visible.
                         nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 4, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): conflicting mapping for bridge port %u in VLAN %u (ifIndex %u, already mapped to ifIndex %u)"),
                            node->getName(), node->getId(), portNumber, vlanId, ifIndex, p->ifIndex);
                      }
