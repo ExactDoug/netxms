@@ -376,6 +376,15 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
          // field is still 0 (fdb.cpp), so entries resolved here are never re-resolved from ambiguous
          // data. Requires no driver API change.
          //
+         // This does mean dot1dBasePortTable is read twice per VLAN during a topology poll, because
+         // node.cpp calls getBridgePorts() afterwards unless isFdbUsingIfIndex() returns true. That
+         // duplication is accepted deliberately. Overriding isFdbUsingIfIndex() is NOT the way to
+         // avoid it: NetworkDeviceDriver::getForwardingDatabase() reacts to that flag by assigning
+         // ifIndex = bridgePort for every entry, which is wrong on Cisco and would corrupt all
+         // resolution. Caching the mappings between the two calls would work but only as a strict
+         // same-poll cache, adding lifetime and staleness rules for a read that is cheap. Reading it
+         // twice keeps both methods self-contained and independently correct.
+         //
          // Done only when this VLAN has something left to resolve, anywhere in the array. That is not
          // an optimization heuristic but a consequence of the data - with nothing unresolved there is
          // nothing to read the table for. Testing the whole array rather than only the entries this
