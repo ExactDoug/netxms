@@ -396,22 +396,26 @@ StructArray<BridgePort> *CiscoDeviceDriver::getBridgePorts(SNMP_Transport *snmp,
       SNMP_SecurityContext *savedSecurityContext = new SNMP_SecurityContext(snmp->getSecurityContext());
       for(int i = 0; i < vlans->size(); i++)
       {
-         VlanInfo *vlan = vlans->get(i);
-         if (vlan->getNumPorts() == 0)
-            continue;   // VLAN without member ports cannot contribute any mappings
-
-         uint16_t vlanId = static_cast<uint16_t>(vlan->getVlanId());
+         // All VLANs are walked, including those reported without member ports. Membership is
+         // collected separately by getVlans() from vlanTrunkPortTable/vmMembershipTable, whose
+         // handlers ignore ports they cannot read, so an empty port list does not prove that the
+         // VLAN has no bridge ports. Forwarding database is read for every VLAN as well, so
+         // skipping any VLAN here would leave its FDB entries unresolvable.
+         uint16_t vlanId = static_cast<uint16_t>(vlans->get(i)->getVlanId());
 
          if (snmp->getSnmpVersion() < SNMP_VERSION_3)
          {
-            char community[128];
-            sprintf(community, "%s@%u", savedSecurityContext->getCommunity(), vlanId);
+            const char *baseCommunity = savedSecurityContext->getCommunity();
+            size_t communityLen = strlen(baseCommunity) + 8;   // "@" + VLAN ID + terminator
+            char *community = MemAllocStringA(communityLen);
+            snprintf(community, communityLen, "%s@%u", baseCommunity, vlanId);
             snmp->setSecurityContext(new SNMP_SecurityContext(community));
+            MemFree(community);
          }
          else
          {
-            char context[128];
-            sprintf(context, "vlan-%u", vlanId);
+            char context[32];
+            snprintf(context, sizeof(context), "vlan-%u", vlanId);
             SNMP_SecurityContext *securityContext = new SNMP_SecurityContext(savedSecurityContext);
             securityContext->setContextName(context);
             snmp->setSecurityContext(securityContext);
@@ -429,7 +433,13 @@ StructArray<BridgePort> *CiscoDeviceDriver::getBridgePorts(SNMP_Transport *snmp,
                   {
                      if (p->ifIndex != ifIndex)
                      {
-                        // Bridge port numbers are not VLAN qualified, so conflicting mapping cannot be resolved - keep first one
+                        // Keep the mapping already collected. Default context is read first, so mappings that were
+                        // available before this override are never replaced by a per-VLAN one.
+                        //
+                        // A conflict means bridge port numbering on this device is VLAN scoped rather than global.
+                        // BridgePort and ForwardingDatabase::IfIndexFromPort are both keyed by port number alone, so
+                        // such a device cannot be represented correctly here - resolving it properly requires VLAN
+                        // qualification in the driver API, not just in this driver. Log it so the case is visible.
                         nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 4, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): conflicting mapping for bridge port %u in VLAN %u (ifIndex %u, already mapped to ifIndex %u)"),
                            node->getName(), node->getId(), portNumber, vlanId, ifIndex, p->ifIndex);
                      }
