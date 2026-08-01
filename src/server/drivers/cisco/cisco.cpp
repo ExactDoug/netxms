@@ -368,6 +368,56 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
             nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read FDB in VLAN %u"), node->getName(), node->getId(), vlanId);
          }
 
+         // Resolve bridge port numbers to interface indexes while still in this VLAN's SNMP context,
+         // where they are unambiguous. Bridge port numbers are only guaranteed meaningful within one
+         // VLAN's bridge, so a device that numbers them per VLAN cannot be represented by the single
+         // port keyed mapping returned by getBridgePorts(). Setting ForwardingDatabaseEntry::ifIndex
+         // here avoids that entirely - server core only falls back to bridge port lookup when this
+         // field is still 0 (fdb.cpp), so entries resolved here are never re-resolved from ambiguous
+         // data. Requires no driver API change.
+         //
+         // Only done when this VLAN actually produced entries. That is not an optimization heuristic
+         // but a consequence of the data: with no entries there is nothing to resolve.
+         if (fdb->size() > size)
+         {
+            StructArray<BridgePort> vlanBridgePorts(0, 64);
+            StructArray<BridgePort> *vlanBridgePortsPtr = &vlanBridgePorts;
+            if (SnmpWalk(snmp, { 1, 3, 6, 1, 2, 1, 17, 1, 4, 1, 2 },
+               [vlanBridgePortsPtr] (SNMP_Variable *var) -> uint32_t
+               {
+                  BridgePort *p = vlanBridgePortsPtr->addPlaceholder();
+                  p->portNumber = var->getName().getElement(11);
+                  p->ifIndex = var->getValueAsUInt();
+                  return SNMP_ERR_SUCCESS;
+               }) == SNMP_ERR_SUCCESS)
+            {
+               int resolved = 0;
+               for(int j = size; j < fdb->size(); j++)
+               {
+                  ForwardingDatabaseEntry *e = fdb->get(j);
+                  for(int k = 0; k < vlanBridgePorts.size(); k++)
+                  {
+                     BridgePort *p = vlanBridgePorts.get(k);
+                     if (p->portNumber == e->bridgePort)
+                     {
+                        e->ifIndex = p->ifIndex;
+                        resolved++;
+                        break;
+                     }
+                  }
+               }
+               nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d of %d entries resolved to interface index in VLAN %u"),
+                  node->getName(), node->getId(), resolved, fdb->size() - size, vlanId);
+            }
+            else
+            {
+               // Leave interface indexes at 0 and let server core attempt its own resolution from
+               // the bridge port mapping - no worse than behaviour without this block.
+               nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read dot1dBasePortTable in VLAN %u, leaving interface indexes unresolved"),
+                  node->getName(), node->getId(), vlanId);
+            }
+         }
+
          size = fdb->size();
       }
       delete vlans;
