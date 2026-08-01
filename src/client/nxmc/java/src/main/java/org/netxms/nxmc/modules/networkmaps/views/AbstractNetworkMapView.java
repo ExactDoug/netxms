@@ -161,6 +161,11 @@ public abstract class AbstractNetworkMapView extends ObjectView implements ISele
 	protected boolean saveSchedulted = false;
    private boolean initialCenteringDone = false; // Viewport has been centered on content once, when the map first had any
 
+   // Retry budget for the initial centering: 20 x 100ms = 2s, comfortably longer than a layout
+   // pass plus a slow object sync, and short enough that a genuinely empty map stops trying.
+   private static final int INITIAL_CENTERING_MAX_ATTEMPTS = 20;
+   private static final int INITIAL_CENTERING_RETRY_DELAY = 100;
+
 	protected Action actionShowStatusIcon;
 	protected Action actionShowStatusBackground;
 	protected Action actionShowStatusFrame;
@@ -527,12 +532,39 @@ public abstract class AbstractNetworkMapView extends ObjectView implements ISele
          return;
 
       // Deferred, because the layout pass for freshly set input has not run yet at this point.
-      viewer.getControl().getDisplay().asyncExec(() -> {
-         if (initialCenteringDone || viewer.getControl().isDisposed())
-            return;
-         if (viewer.centerOnContent())
-            initialCenteringDone = true;
-      });
+      viewer.getControl().getDisplay().asyncExec(() -> attemptInitialCentering(0));
+   }
+
+   /**
+    * Try to center, and keep trying until the viewport is actually laid out.
+    *
+    * centerOnContent() reports false while the viewport still has no size, which is a normal
+    * transient state rather than an error. A single deferred attempt is NOT enough: it only
+    * happens to work where something calls refresh() repeatedly. In the Maps perspective view
+    * activation and object updates do exactly that, so one attempt eventually lands after layout
+    * and the omission is invisible. In a kiosk pop-out window (?map=...&kiosk-mode=true) there is
+    * typically ONE refresh after the object sync, so if that attempt lands before layout the map
+    * is never centered at all - which is how this shipped to production looking fine.
+    *
+    * So retry on a short timer instead of assuming a refresh will come back around. Bounded,
+    * because a map legitimately without content must not leave a timer running forever.
+    *
+    * @param attempt zero-based attempt counter
+    */
+   private void attemptInitialCentering(int attempt)
+   {
+      if (initialCenteringDone || viewer.getControl().isDisposed())
+         return;
+
+      if (viewer.centerOnContent())
+      {
+         initialCenteringDone = true;
+         return;
+      }
+
+      if (attempt < INITIAL_CENTERING_MAX_ATTEMPTS)
+         viewer.getControl().getDisplay().timerExec(INITIAL_CENTERING_RETRY_DELAY,
+               () -> attemptInitialCentering(attempt + 1));
    }
 
 	/**

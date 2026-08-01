@@ -34,6 +34,7 @@ import org.eclipse.rap.rwt.internal.application.ApplicationImpl;
 import org.eclipse.rap.rwt.internal.resources.ContentBuffer;
 import org.eclipse.rap.rwt.service.ResourceLoader;
 import org.eclipse.swt.SWT;
+import org.netxms.base.VersionInfo;
 import org.netxms.client.services.ServiceManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,33 @@ import io.github.secretx33.resourceresolver.ResourcePatternResolver;
  */
 public class WebApplicationConfiguration implements ApplicationConfiguration
 {
+   /**
+    * Path segment for the concatenated client script bundle: the RAP version, plus this build's
+    * tag so that the URL changes whenever the bundle content can have changed.
+    *
+    * Registration and the startup page reference MUST use the same value, so it is computed once
+    * here rather than at the two call sites.
+    *
+    * @return resource name of the form "&lt;rapVersion&gt;-&lt;buildTag&gt;/nxmc-library.js"
+    */
+   private static String libraryResourceName()
+   {
+      String tag;
+      try
+      {
+         tag = VersionInfo.buildTag();
+      }
+      catch(Throwable e)
+      {
+         tag = null; // never let cache busting break startup
+      }
+      if ((tag == null) || tag.isEmpty())
+         tag = "untagged";
+      // Keep it safe as a URL path segment and as a resource name.
+      tag = tag.replaceAll("[^A-Za-z0-9._-]", "_");
+      return SWT.getVersion() + "-" + tag + "/nxmc-library.js";
+   }
+
    private static Logger logger = LoggerFactory.getLogger(WebApplicationConfiguration.class);
 
    private final ContentBuffer concatenatedScript = new ContentBuffer();
@@ -72,14 +100,28 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
       addJsLibrary("/js/msgproxy.js");
       addJsLibrary("/js/rwt-util.js");
       addJsLibrary("/js/svgcanvas.js");
-      app.addResource(SWT.getVersion() + "/nxmc-library.js", new ResourceLoader() {
+      // CACHE BUSTING - the path segment must change whenever the bundle's CONTENT changes.
+      //
+      // This used to be SWT.getVersion() alone, i.e. the RAP bundle version ("430"), which is
+      // identical for every build of a given RAP release. The concatenated bundle is served by
+      // Jetty's DefaultServlet with an ETag and Last-Modified but NO Cache-Control, so browsers
+      // apply RFC 9111 heuristic freshness (~10% of the age of Last-Modified). A client that last
+      // loaded the console days ago will therefore serve the OLD bundle from cache WITHOUT EVEN
+      // REVALIDATING, while talking to a server running the new one. The two disagree about the
+      // widget protocol and RAP reports "the application terminated unexpectedly" - which is
+      // exactly what happened after the first production deployment, and it could only be escaped
+      // by private browsing or a different browser, because iOS Safari would not release the entry.
+      //
+      // Appending the build tag makes the URL content-specific, so a new build is a new resource
+      // that no cache can satisfy, and an unchanged build keeps its URL and stays cacheable.
+      app.addResource(libraryResourceName(), new ResourceLoader() {
          @Override
          public InputStream getResourceAsStream(String resourceName)
          {
             return concatenatedScript.getContentAsStream();
          }
       });
-      ((ApplicationImpl)app).getApplicationContext().getStartupPage().addJsLibrary("rwt-resources/" + SWT.getVersion() + "/nxmc-library.js");
+      ((ApplicationImpl)app).getApplicationContext().getStartupPage().addJsLibrary("rwt-resources/" + libraryResourceName());
 
       registerAllResources(app, "vncviewer");
 
