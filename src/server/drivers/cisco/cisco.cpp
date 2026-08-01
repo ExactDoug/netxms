@@ -391,10 +391,22 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
                   return SNMP_ERR_SUCCESS;
                }) == SNMP_ERR_SUCCESS)
             {
-               int resolved = 0;
-               for(int j = size; j < fdb->size(); j++)
+               // Resolve every still unresolved entry for this VLAN, not only the ones just added.
+               // NetworkDeviceDriver::getForwardingDatabase() runs first and reads dot1qTpFdbTable,
+               // which is VLAN qualified, so entries for this VLAN may already be present from that
+               // walk. They are earlier in the array, and ForwardingDatabase deduplicates by MAC
+               // address keeping the FIRST occurrence, so those are the entries that survive - and
+               // resolving only the newly added copies would leave the surviving ones to be resolved
+               // from the VLAN collapsed mapping this method exists to avoid. Entries from the plain
+               // dot1dTpFdbTable walk have vlanId 0 and never match a real VLAN, so they are left
+               // for server core to handle as before.
+               int resolved = 0, candidates = 0;
+               for(int j = 0; j < fdb->size(); j++)
                {
                   ForwardingDatabaseEntry *e = fdb->get(j);
+                  if ((e->vlanId != vlanId) || (e->ifIndex != 0))
+                     continue;
+                  candidates++;
                   for(int k = 0; k < vlanBridgePorts.size(); k++)
                   {
                      BridgePort *p = vlanBridgePorts.get(k);
@@ -407,7 +419,7 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
                   }
                }
                nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d of %d entries resolved to interface index in VLAN %u"),
-                  node->getName(), node->getId(), resolved, fdb->size() - size, vlanId);
+                  node->getName(), node->getId(), resolved, candidates, vlanId);
             }
             else
             {
