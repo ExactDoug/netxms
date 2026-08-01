@@ -374,6 +374,92 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
 }
 
 /**
+ * Get bridge port to interface mapping. Cisco switches expose BRIDGE-MIB per VLAN, using
+ * community string indexing for SNMP v1/v2c and context name for SNMP v3, so bridge port table
+ * has to be read in the same per-VLAN contexts as forwarding database.
+ *
+ * @param snmp SNMP transport
+ * @param node Node
+ * @param driverData driver-specific data previously created in analyzeDevice
+ * @return bridge port mappings or NULL on failure
+ */
+StructArray<BridgePort> *CiscoDeviceDriver::getBridgePorts(SNMP_Transport *snmp, NObject *node, DriverData *driverData)
+{
+   StructArray<BridgePort> *bridgePorts = NetworkDeviceDriver::getBridgePorts(snmp, node, driverData);
+   if (bridgePorts == nullptr)
+      bridgePorts = new StructArray<BridgePort>(0, 64);
+
+   VlanList *vlans = getVlans(snmp, node, driverData);
+   if (vlans != nullptr)
+   {
+      int size = bridgePorts->size();
+      SNMP_SecurityContext *savedSecurityContext = new SNMP_SecurityContext(snmp->getSecurityContext());
+      for(int i = 0; i < vlans->size(); i++)
+      {
+         VlanInfo *vlan = vlans->get(i);
+         if (vlan->getNumPorts() == 0)
+            continue;   // VLAN without member ports cannot contribute any mappings
+
+         uint16_t vlanId = static_cast<uint16_t>(vlan->getVlanId());
+
+         if (snmp->getSnmpVersion() < SNMP_VERSION_3)
+         {
+            char community[128];
+            sprintf(community, "%s@%u", savedSecurityContext->getCommunity(), vlanId);
+            snmp->setSecurityContext(new SNMP_SecurityContext(community));
+         }
+         else
+         {
+            char context[128];
+            sprintf(context, "vlan-%u", vlanId);
+            SNMP_SecurityContext *securityContext = new SNMP_SecurityContext(savedSecurityContext);
+            securityContext->setContextName(context);
+            snmp->setSecurityContext(securityContext);
+         }
+
+         if (SnmpWalk(snmp, { 1, 3, 6, 1, 2, 1, 17, 1, 4, 1, 2 },
+            [bridgePorts, vlanId, node] (SNMP_Variable *var) -> uint32_t
+            {
+               uint32_t portNumber = var->getName().getElement(11);
+               uint32_t ifIndex = var->getValueAsUInt();
+               for(int j = 0; j < bridgePorts->size(); j++)
+               {
+                  BridgePort *p = bridgePorts->get(j);
+                  if (p->portNumber == portNumber)
+                  {
+                     if (p->ifIndex != ifIndex)
+                     {
+                        // Bridge port numbers are not VLAN qualified, so conflicting mapping cannot be resolved - keep first one
+                        nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 4, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): conflicting mapping for bridge port %u in VLAN %u (ifIndex %u, already mapped to ifIndex %u)"),
+                           node->getName(), node->getId(), portNumber, vlanId, ifIndex, p->ifIndex);
+                     }
+                     return SNMP_ERR_SUCCESS;
+                  }
+               }
+               BridgePort *p = bridgePorts->addPlaceholder();
+               p->portNumber = portNumber;
+               p->ifIndex = ifIndex;
+               return SNMP_ERR_SUCCESS;
+            }) == SNMP_ERR_SUCCESS)
+         {
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): %d mappings read from dot1dBasePortTable in VLAN %u"), node->getName(), node->getId(), bridgePorts->size() - size, vlanId);
+         }
+         else
+         {
+            // Some Cisco switches may not return data for certain system VLANs
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): cannot read dot1dBasePortTable in VLAN %u"), node->getName(), node->getId(), vlanId);
+         }
+
+         size = bridgePorts->size();
+      }
+      delete vlans;
+      snmp->setSecurityContext(savedSecurityContext);
+   }
+
+   return bridgePorts;
+}
+
+/**
  * Get SSH driver hints for Cisco IOS/IOS-XE devices
  */
 void CiscoDeviceDriver::getSSHDriverHints(SSHDriverHints *hints) const
