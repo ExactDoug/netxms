@@ -414,9 +414,12 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
                //
                // Entries from the base plain dot1dTpFdbTable walk are tagged vlanId 1 by
                // NetworkDeviceDriver::FDBHandler, so they are picked up during the VLAN 1 pass. That
-               // is correct rather than incidental: that walk runs in the default SNMP context, which
-               // on IOS exposes VLAN 1's bridge, so its bridge port numbers are VLAN 1 numbers and
-               // resolving them against VLAN 1's dot1dBasePortTable is exactly right.
+               // walk runs in the default SNMP context, which on the Catalyst platform tested here
+               // exposes VLAN 1's bridge - its dot1dBasePortTable reported only VLAN 1's ports - so
+               // resolving those entries against VLAN 1's table matches where they came from. This is
+               // an observation about the devices this driver serves, not a guarantee from the code:
+               // if a device's default context were some other bridge, the port numbers would simply
+               // not match VLAN 1's table and the entries would stay unresolved for server core.
                int resolved = 0, candidates = 0;
                for(int j = 0; j < fdb->size(); j++)
                {
