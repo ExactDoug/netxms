@@ -336,15 +336,19 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
       {
          uint16_t vlanId = vlans->get(i)->getVlanId();
 
-         char context[128];
          if (snmp->getSnmpVersion() < SNMP_VERSION_3)
          {
-            sprintf(context, "%s@%u", savedSecurityContext->getCommunity(), vlanId);
-            snmp->setSecurityContext(new SNMP_SecurityContext(context));
+            const char *baseCommunity = savedSecurityContext->getCommunity();
+            size_t communityLen = strlen(baseCommunity) + 8;   // "@" + VLAN ID + terminator
+            char *community = MemAllocStringA(communityLen);
+            snprintf(community, communityLen, "%s@%u", baseCommunity, vlanId);
+            snmp->setSecurityContext(new SNMP_SecurityContext(community));
+            MemFree(community);
          }
          else
          {
-            sprintf(context, "vlan-%u", vlanId);
+            char context[32];
+            snprintf(context, sizeof(context), "vlan-%u", vlanId);
             SNMP_SecurityContext *securityContext = new SNMP_SecurityContext(savedSecurityContext);
             securityContext->setContextName(context);
             snmp->setSecurityContext(securityContext);
@@ -356,12 +360,12 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
                return FDBHandler(var, snmp, vlanId, fdb);
             }) == SNMP_ERR_SUCCESS)
          {
-            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d entries read from dot1dTpFdbTable in context %hs"), node->getName(), node->getId(), fdb->size() - size, context);
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d entries read from dot1dTpFdbTable in VLAN %u"), node->getName(), node->getId(), fdb->size() - size, vlanId);
          }
          else
          {
             // Some Cisco switches may not return data for certain system VLANs
-            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read FDB in context %hs"), node->getName(), node->getId(), context);
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read FDB in VLAN %u"), node->getName(), node->getId(), vlanId);
          }
 
          size = fdb->size();
