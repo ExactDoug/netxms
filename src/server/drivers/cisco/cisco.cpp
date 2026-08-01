@@ -376,9 +376,22 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
          // field is still 0 (fdb.cpp), so entries resolved here are never re-resolved from ambiguous
          // data. Requires no driver API change.
          //
-         // Only done when this VLAN actually produced entries. That is not an optimization heuristic
-         // but a consequence of the data: with no entries there is nothing to resolve.
-         if (fdb->size() > size)
+         // Done only when this VLAN has something left to resolve, anywhere in the array. That is not
+         // an optimization heuristic but a consequence of the data - with nothing unresolved there is
+         // nothing to read the table for. Testing the whole array rather than only the entries this
+         // VLAN's walk just added matters: dot1qTpFdbTable entries for this VLAN may already be
+         // present from the base walk even when the per-VLAN dot1dTpFdbTable walk adds nothing.
+         bool resolutionNeeded = false;
+         for(int j = 0; j < fdb->size(); j++)
+         {
+            ForwardingDatabaseEntry *e = fdb->get(j);
+            if ((e->vlanId == vlanId) && (e->ifIndex == 0) && (e->bridgePort != 0))
+            {
+               resolutionNeeded = true;
+               break;
+            }
+         }
+         if (resolutionNeeded)
          {
             StructArray<BridgePort> vlanBridgePorts(0, 64);
             StructArray<BridgePort> *vlanBridgePortsPtr = &vlanBridgePorts;
@@ -397,9 +410,13 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
                // walk. They are earlier in the array, and ForwardingDatabase deduplicates by MAC
                // address keeping the FIRST occurrence, so those are the entries that survive - and
                // resolving only the newly added copies would leave the surviving ones to be resolved
-               // from the VLAN collapsed mapping this method exists to avoid. Entries from the plain
-               // dot1dTpFdbTable walk have vlanId 0 and never match a real VLAN, so they are left
-               // for server core to handle as before.
+               // from the VLAN collapsed mapping this method exists to avoid.
+               //
+               // Entries from the base plain dot1dTpFdbTable walk are tagged vlanId 1 by
+               // NetworkDeviceDriver::FDBHandler, so they are picked up during the VLAN 1 pass. That
+               // is correct rather than incidental: that walk runs in the default SNMP context, which
+               // on IOS exposes VLAN 1's bridge, so its bridge port numbers are VLAN 1 numbers and
+               // resolving them against VLAN 1's dot1dBasePortTable is exactly right.
                int resolved = 0, candidates = 0;
                for(int j = 0; j < fdb->size(); j++)
                {
