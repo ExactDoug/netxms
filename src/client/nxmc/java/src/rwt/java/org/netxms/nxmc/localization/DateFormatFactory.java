@@ -73,6 +73,9 @@ public class DateFormatFactory
       instance.timeFormatString = ps.getAsString("DateFormatFactory.Format.Time");
       instance.shortTimeFormatString = ps.getAsString("DateFormatFactory.Format.ShortTime");
       RWT.getUISession().setAttribute("netxms.dateFormatFactory", instance);
+
+      // Cache browser timezone while the initial RAP request is active.
+      ClientTimeZone.get();
    }
 
    /**
