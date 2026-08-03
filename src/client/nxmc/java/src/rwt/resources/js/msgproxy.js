@@ -7,30 +7,6 @@
 
 (function() {
 	'use strict';
-
-	/*
-	 * Capture the browser's IANA timezone before RAP sends the initial UI
-	 * protocol request. JavaScript's Intl API preserves daylight-saving and
-	 * historical timezone rules, unlike RAP's numeric offset alone.
-	 */
-	try {
-		if ((typeof Intl === "object") && (typeof Intl.DateTimeFormat === "function")) {
-			var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-			if ((typeof timeZone === "string") && (timeZone.length > 0) && (timeZone.length <= 128)) {
-				var path = window.location.pathname.replace(/\/[^/]*$/, "/");
-				if (!path) {
-					path = "/";
-				}
-				var cookie = "nxmcClientTimeZone=" + encodeURIComponent(timeZone) + "; Path=" + path + "; SameSite=Lax";
-				if (window.location.protocol === "https:") {
-					cookie += "; Secure";
-				}
-				document.cookie = cookie;
-			}
-		}
-	} catch (e) {
-		/* RAP ClientInfo numeric offset is used as fallback. */
-	}
  
 	if (!window.netxms) {
 		window.netxms = {};
