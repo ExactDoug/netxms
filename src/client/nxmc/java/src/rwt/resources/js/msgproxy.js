@@ -90,7 +90,7 @@
  
 		destroy : function() {
 			rap.off("send", this.onSend);
-			this.element.parentNode.removeChild(this.element);
+ 			this.element.parentNode.removeChild(this.element);
 		},
  
 		layout : function() {
