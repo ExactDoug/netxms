@@ -73,10 +73,6 @@ public class DateFormatFactory
       instance.timeFormatString = ps.getAsString("DateFormatFactory.Format.Time");
       instance.shortTimeFormatString = ps.getAsString("DateFormatFactory.Format.ShortTime");
       RWT.getUISession().setAttribute("netxms.dateFormatFactory", instance);
-      if (ps.getAsBoolean("DateFormatFactory.UseServerTimeZone", false))
-         Registry.setServerTimeZone();
-      else
-         Registry.resetTimeZone();
    }
 
    /**
@@ -90,10 +86,6 @@ public class DateFormatFactory
       instance.dateFormatString = ps.getAsString("DateFormatFactory.Format.Date");
       instance.timeFormatString = ps.getAsString("DateFormatFactory.Format.Time");
       instance.shortTimeFormatString = ps.getAsString("DateFormatFactory.Format.ShortTime");
-      if (ps.getAsBoolean("DateFormatFactory.UseServerTimeZone", false))
-         Registry.setServerTimeZone();
-      else
-         Registry.resetTimeZone();
    }
 
    /**
@@ -114,6 +106,25 @@ public class DateFormatFactory
    private static DateFormatFactory getInstance()
    {
       return (DateFormatFactory)RWT.getUISession().getAttribute("netxms.dateFormatFactory");
+   }
+
+   /**
+    * Get timezone selected for timestamp display.
+    *
+    * @return selected timezone
+    */
+   private static TimeZone getTimeZone()
+   {
+      if (PreferenceStore.getInstance().getAsBoolean("DateFormatFactory.UseServerTimeZone", false))
+      {
+         NXCSession session = Registry.getSession();
+         if (session != null)
+         {
+            String tz = session.getServerTimeZone();
+            return TimeZone.getTimeZone(tz.replaceAll("[A-Za-z]*([\\+\\-][0-9]+)(:[0-9]+)?.*", "GMT$1$2"));
+         }
+      }
+      return ClientTimeZone.get();
    }
 
    /**
@@ -145,9 +156,7 @@ public class DateFormatFactory
             df = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM);
             break;
       }
-      TimeZone tz = Registry.getTimeZone();
-      if (tz != null)
-         df.setTimeZone(tz);
+      df.setTimeZone(getTimeZone());
       return df;
    }
 
@@ -180,9 +189,7 @@ public class DateFormatFactory
             df = DateFormat.getDateInstance(DateFormat.SHORT);
             break;
       }
-      TimeZone tz = Registry.getTimeZone();
-      if (tz != null)
-         df.setTimeZone(tz);
+      df.setTimeZone(getTimeZone());
       return df;
    }
 
@@ -215,9 +222,7 @@ public class DateFormatFactory
             df = DateFormat.getTimeInstance(DateFormat.MEDIUM);
             break;
       }
-      TimeZone tz = Registry.getTimeZone();
-      if (tz != null)
-         df.setTimeZone(tz);
+      df.setTimeZone(getTimeZone());
       return df;
    }
 
@@ -250,9 +255,7 @@ public class DateFormatFactory
             df = DateFormat.getTimeInstance(DateFormat.SHORT);
             break;
       }
-      TimeZone tz = Registry.getTimeZone();
-      if (tz != null)
-         df.setTimeZone(tz);
+      df.setTimeZone(getTimeZone());
       return df;
    }
 
