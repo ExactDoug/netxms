@@ -43,21 +43,17 @@ public final class ClientTimeZone
     */
    public static TimeZone get()
    {
-      TimeZone timeZone = getTimeZoneFromCookie();
+      TimeZone timeZone = (TimeZone)RWT.getUISession().getAttribute(SESSION_ATTRIBUTE);
       if (timeZone != null)
-      {
-         RWT.getUISession().setAttribute(SESSION_ATTRIBUTE, timeZone);
          return timeZone;
-      }
 
-      timeZone = (TimeZone)RWT.getUISession().getAttribute(SESSION_ATTRIBUTE);
+      timeZone = getTimeZoneFromCookie();
       if (timeZone == null)
-      {
          timeZone = getTimeZoneFromClientInfo();
-         if (timeZone == null)
-            timeZone = TimeZone.getDefault();
-         RWT.getUISession().setAttribute(SESSION_ATTRIBUTE, timeZone);
-      }
+      if (timeZone == null)
+         timeZone = TimeZone.getDefault();
+
+      RWT.getUISession().setAttribute(SESSION_ATTRIBUTE, timeZone);
       return timeZone;
    }
 
@@ -68,7 +64,16 @@ public final class ClientTimeZone
     */
    private static TimeZone getTimeZoneFromCookie()
    {
-      Cookie[] cookies = RWT.getRequest().getCookies();
+      final Cookie[] cookies;
+      try
+      {
+         cookies = RWT.getRequest().getCookies();
+      }
+      catch(IllegalStateException e)
+      {
+         return null;
+      }
+
       if (cookies == null)
          return null;
 
