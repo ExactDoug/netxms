@@ -89,7 +89,7 @@ public class WebApplicationConfiguration implements ApplicationConfiguration
 
       Map<String, String> properties = new HashMap<>();
       properties.put(WebClient.THEME_ID, "org.netxms.themes.light");
-      app.addEntryPoint("/nxmc-light.app", Startup.class, properties);
+      app.addEntryPoint("/nxmc-light.app", ResponsiveStartup.class, properties);
 
       app.setOperationMode(OperationMode.SWT_COMPATIBILITY);
       app.setExceptionHandler(new ExceptionHandler() {
