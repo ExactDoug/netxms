@@ -7,6 +7,26 @@
 
 (function() {
 	'use strict';
+
+	/* Capture browser IANA timezone before RAP sends its initial UI request. */
+	try {
+		if ((typeof Intl === "object") && (typeof Intl.DateTimeFormat === "function")) {
+			var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			if ((typeof timeZone === "string") && (timeZone.length > 0) && (timeZone.length <= 128)) {
+				var path = window.location.pathname.replace(/\/[^/]*$/, "/");
+				if (!path) {
+					path = "/";
+				}
+				var cookie = "nxmcClientTimeZone=" + encodeURIComponent(timeZone) + "; Path=" + path + "; SameSite=Lax";
+				if (window.location.protocol === "https:") {
+					cookie += "; Secure";
+				}
+				document.cookie = cookie;
+			}
+		}
+	} catch (e) {
+		/* RAP ClientInfo numeric offset is used as fallback. */
+	}
  
 	if (!window.netxms) {
 		window.netxms = {};
