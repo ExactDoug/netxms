@@ -336,15 +336,19 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
       {
          uint16_t vlanId = vlans->get(i)->getVlanId();
 
-         char context[128];
          if (snmp->getSnmpVersion() < SNMP_VERSION_3)
          {
-            sprintf(context, "%s@%u", savedSecurityContext->getCommunity(), vlanId);
-            snmp->setSecurityContext(new SNMP_SecurityContext(context));
+            const char *baseCommunity = savedSecurityContext->getCommunity();
+            size_t communityLen = strlen(baseCommunity) + 8;   // "@" + VLAN ID + terminator
+            char *community = MemAllocStringA(communityLen);
+            snprintf(community, communityLen, "%s@%u", baseCommunity, vlanId);
+            snmp->setSecurityContext(new SNMP_SecurityContext(community));
+            MemFree(community);
          }
          else
          {
-            sprintf(context, "vlan-%u", vlanId);
+            char context[32];
+            snprintf(context, sizeof(context), "vlan-%u", vlanId);
             SNMP_SecurityContext *securityContext = new SNMP_SecurityContext(savedSecurityContext);
             securityContext->setContextName(context);
             snmp->setSecurityContext(securityContext);
@@ -356,12 +360,103 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
                return FDBHandler(var, snmp, vlanId, fdb);
             }) == SNMP_ERR_SUCCESS)
          {
-            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d entries read from dot1dTpFdbTable in context %hs"), node->getName(), node->getId(), fdb->size() - size, context);
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d entries read from dot1dTpFdbTable in VLAN %u"), node->getName(), node->getId(), fdb->size() - size, vlanId);
          }
          else
          {
             // Some Cisco switches may not return data for certain system VLANs
-            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read FDB in context %hs"), node->getName(), node->getId(), context);
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read FDB in VLAN %u"), node->getName(), node->getId(), vlanId);
+         }
+
+         // Resolve bridge port numbers to interface indexes while still in this VLAN's SNMP context,
+         // where they are unambiguous. Bridge port numbers are only guaranteed meaningful within one
+         // VLAN's bridge, so a device that numbers them per VLAN cannot be represented by the single
+         // port keyed mapping returned by getBridgePorts(). Setting ForwardingDatabaseEntry::ifIndex
+         // here avoids that entirely - server core only falls back to bridge port lookup when this
+         // field is still 0 (fdb.cpp), so entries resolved here are never re-resolved from ambiguous
+         // data. Requires no driver API change.
+         //
+         // This does mean dot1dBasePortTable is read twice per VLAN during a topology poll, because
+         // node.cpp calls getBridgePorts() afterwards unless isFdbUsingIfIndex() returns true. That
+         // duplication is accepted deliberately. Overriding isFdbUsingIfIndex() is NOT the way to
+         // avoid it: NetworkDeviceDriver::getForwardingDatabase() reacts to that flag by assigning
+         // ifIndex = bridgePort for every entry, which is wrong on Cisco and would corrupt all
+         // resolution. Caching the mappings between the two calls would work but only as a strict
+         // same-poll cache, adding lifetime and staleness rules for a read that is cheap. Reading it
+         // twice keeps both methods self-contained and independently correct.
+         //
+         // Done only when this VLAN has something left to resolve, anywhere in the array. That is not
+         // an optimization heuristic but a consequence of the data - with nothing unresolved there is
+         // nothing to read the table for. Testing the whole array rather than only the entries this
+         // VLAN's walk just added matters: dot1qTpFdbTable entries for this VLAN may already be
+         // present from the base walk even when the per-VLAN dot1dTpFdbTable walk adds nothing.
+         bool resolutionNeeded = false;
+         for(int j = 0; j < fdb->size(); j++)
+         {
+            ForwardingDatabaseEntry *e = fdb->get(j);
+            if ((e->vlanId == vlanId) && (e->ifIndex == 0) && (e->bridgePort != 0))
+            {
+               resolutionNeeded = true;
+               break;
+            }
+         }
+         if (resolutionNeeded)
+         {
+            StructArray<BridgePort> vlanBridgePorts(0, 64);
+            StructArray<BridgePort> *vlanBridgePortsPtr = &vlanBridgePorts;
+            if (SnmpWalk(snmp, { 1, 3, 6, 1, 2, 1, 17, 1, 4, 1, 2 },
+               [vlanBridgePortsPtr] (SNMP_Variable *var) -> uint32_t
+               {
+                  BridgePort *p = vlanBridgePortsPtr->addPlaceholder();
+                  p->portNumber = var->getName().getElement(11);
+                  p->ifIndex = var->getValueAsUInt();
+                  return SNMP_ERR_SUCCESS;
+               }) == SNMP_ERR_SUCCESS)
+            {
+               // Resolve every still unresolved entry for this VLAN, not only the ones just added.
+               // NetworkDeviceDriver::getForwardingDatabase() runs first and reads dot1qTpFdbTable,
+               // which is VLAN qualified, so entries for this VLAN may already be present from that
+               // walk. They are earlier in the array, and ForwardingDatabase deduplicates by MAC
+               // address keeping the FIRST occurrence, so those are the entries that survive - and
+               // resolving only the newly added copies would leave the surviving ones to be resolved
+               // from the VLAN collapsed mapping this method exists to avoid.
+               //
+               // Entries from the base plain dot1dTpFdbTable walk are tagged vlanId 1 by
+               // NetworkDeviceDriver::FDBHandler, so they are picked up during the VLAN 1 pass. That
+               // walk runs in the default SNMP context, which on the Catalyst platform tested here
+               // exposes VLAN 1's bridge - its dot1dBasePortTable reported only VLAN 1's ports - so
+               // resolving those entries against VLAN 1's table matches where they came from. This is
+               // an observation about the devices this driver serves, not a guarantee from the code:
+               // if a device's default context were some other bridge, the port numbers would simply
+               // not match VLAN 1's table and the entries would stay unresolved for server core.
+               int resolved = 0, candidates = 0;
+               for(int j = 0; j < fdb->size(); j++)
+               {
+                  ForwardingDatabaseEntry *e = fdb->get(j);
+                  if ((e->vlanId != vlanId) || (e->ifIndex != 0))
+                     continue;
+                  candidates++;
+                  for(int k = 0; k < vlanBridgePorts.size(); k++)
+                  {
+                     BridgePort *p = vlanBridgePorts.get(k);
+                     if (p->portNumber == e->bridgePort)
+                     {
+                        e->ifIndex = p->ifIndex;
+                        resolved++;
+                        break;
+                     }
+                  }
+               }
+               nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): %d of %d entries resolved to interface index in VLAN %u"),
+                  node->getName(), node->getId(), resolved, candidates, vlanId);
+            }
+            else
+            {
+               // Leave interface indexes at 0 and let server core attempt its own resolution from
+               // the bridge port mapping - no worse than behaviour without this block.
+               nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getForwardingDatabase(%s [%u]): cannot read dot1dBasePortTable in VLAN %u, leaving interface indexes unresolved"),
+                  node->getName(), node->getId(), vlanId);
+            }
          }
 
          size = fdb->size();
@@ -371,6 +466,118 @@ StructArray<ForwardingDatabaseEntry> *CiscoDeviceDriver::getForwardingDatabase(S
    }
 
    return fdb;
+}
+
+/**
+ * Get bridge port to interface mapping. Cisco switches expose BRIDGE-MIB per VLAN, using
+ * community string indexing for SNMP v1/v2c and context name for SNMP v3, so bridge port table
+ * has to be read in the same per-VLAN contexts as forwarding database.
+ *
+ * @param snmp SNMP transport
+ * @param node Node
+ * @param driverData driver-specific data previously created in analyzeDevice
+ * @return bridge port mappings or NULL on failure
+ */
+StructArray<BridgePort> *CiscoDeviceDriver::getBridgePorts(SNMP_Transport *snmp, NObject *node, DriverData *driverData)
+{
+   StructArray<BridgePort> *bridgePorts = NetworkDeviceDriver::getBridgePorts(snmp, node, driverData);
+   if (bridgePorts == nullptr)
+      bridgePorts = new StructArray<BridgePort>(0, 64);
+
+   VlanList *vlans = getVlans(snmp, node, driverData);
+   if (vlans != nullptr)
+   {
+      int size = bridgePorts->size();
+      SNMP_SecurityContext *savedSecurityContext = new SNMP_SecurityContext(snmp->getSecurityContext());
+      for(int i = 0; i < vlans->size(); i++)
+      {
+         // All VLANs are walked, including those reported without member ports. Membership is
+         // collected separately by getVlans() from vlanTrunkPortTable/vmMembershipTable, whose
+         // handlers ignore ports they cannot read, so an empty port list does not prove that the
+         // VLAN has no bridge ports. Forwarding database is read for every VLAN as well, so
+         // skipping any VLAN here would leave its FDB entries unresolvable.
+         uint16_t vlanId = static_cast<uint16_t>(vlans->get(i)->getVlanId());
+
+         if (snmp->getSnmpVersion() < SNMP_VERSION_3)
+         {
+            const char *baseCommunity = savedSecurityContext->getCommunity();
+            size_t communityLen = strlen(baseCommunity) + 8;   // "@" + VLAN ID + terminator
+            char *community = MemAllocStringA(communityLen);
+            snprintf(community, communityLen, "%s@%u", baseCommunity, vlanId);
+            snmp->setSecurityContext(new SNMP_SecurityContext(community));
+            MemFree(community);
+         }
+         else
+         {
+            char context[32];
+            snprintf(context, sizeof(context), "vlan-%u", vlanId);
+            SNMP_SecurityContext *securityContext = new SNMP_SecurityContext(savedSecurityContext);
+            securityContext->setContextName(context);
+            snmp->setSecurityContext(securityContext);
+         }
+
+         if (SnmpWalk(snmp, { 1, 3, 6, 1, 2, 1, 17, 1, 4, 1, 2 },
+            [bridgePorts, vlanId, node] (SNMP_Variable *var) -> uint32_t
+            {
+               uint32_t portNumber = var->getName().getElement(11);
+               uint32_t ifIndex = var->getValueAsUInt();
+               for(int j = 0; j < bridgePorts->size(); j++)
+               {
+                  BridgePort *p = bridgePorts->get(j);
+                  if (p->ifIndex == ifIndex)
+                  {
+                     if (p->portNumber != portNumber)
+                     {
+                        // Same interface already mapped from a different bridge port number. Mapping has to stay
+                        // injective in both directions: Node::getInterfaceList() applies these by interface index
+                        // and takes the last match, so accepting this would overwrite an already correct bridge
+                        // port number on the interface object - including one read from the default context.
+                        nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 4, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): bridge port %u in VLAN %u maps to ifIndex %u which is already mapped from bridge port %u"),
+                           node->getName(), node->getId(), portNumber, vlanId, ifIndex, p->portNumber);
+                     }
+                     return SNMP_ERR_SUCCESS;
+                  }
+                  if (p->portNumber == portNumber)
+                  {
+                     if (p->ifIndex != ifIndex)
+                     {
+                        // Keep the mapping already collected. Default context is read first, so mappings that were
+                        // available before this override are never replaced by a per-VLAN one.
+                        //
+                        // A conflict means bridge port numbering on this device is VLAN scoped rather than global.
+                        // BridgePort and ForwardingDatabase::IfIndexFromPort are both keyed by port number alone, so
+                        // a VLAN scoped device cannot be fully represented by this method's return value. FDB
+                        // resolution for such a device can still be made correct without changing the driver API,
+                        // by resolving interface indexes inside each VLAN context during forwarding database
+                        // retrieval and setting ForwardingDatabaseEntry::ifIndex directly - fdb.cpp only falls back
+                        // to bridge port lookup when that field is left at 0. Log the conflict so the case is visible.
+                        nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 4, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): conflicting mapping for bridge port %u in VLAN %u (ifIndex %u, already mapped to ifIndex %u)"),
+                           node->getName(), node->getId(), portNumber, vlanId, ifIndex, p->ifIndex);
+                     }
+                     return SNMP_ERR_SUCCESS;
+                  }
+               }
+               BridgePort *p = bridgePorts->addPlaceholder();
+               p->portNumber = portNumber;
+               p->ifIndex = ifIndex;
+               return SNMP_ERR_SUCCESS;
+            }) == SNMP_ERR_SUCCESS)
+         {
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): %d mappings read from dot1dBasePortTable in VLAN %u"), node->getName(), node->getId(), bridgePorts->size() - size, vlanId);
+         }
+         else
+         {
+            // Some Cisco switches may not return data for certain system VLANs
+            nxlog_debug_tag(DEBUG_TAG_TOPO_FDB, 5, _T("CiscoDeviceDriver::getBridgePorts(%s [%u]): cannot read dot1dBasePortTable in VLAN %u"), node->getName(), node->getId(), vlanId);
+         }
+
+         size = bridgePorts->size();
+      }
+      delete vlans;
+      snmp->setSecurityContext(savedSecurityContext);
+   }
+
+   return bridgePorts;
 }
 
 /**
