@@ -21,8 +21,10 @@ package org.netxms.nxmc.modules.objects;
 import java.util.HashMap;
 import java.util.Map;
 import org.eclipse.swt.graphics.Image;
+import org.eclipse.swt.graphics.ImageData;
 import org.eclipse.swt.widgets.Display;
 import org.netxms.client.objects.AbstractObject;
+import org.netxms.client.objects.Node;
 import org.netxms.nxmc.Registry;
 import org.netxms.nxmc.resources.ResourceManager;
 import org.netxms.nxmc.resources.SharedIcons;
@@ -43,6 +45,12 @@ public final class ObjectIcons
    }
 
    private Map<Integer, Image> images;
+   private Image nodeSwitch;
+   private Image nodeRouter;
+   private Image nodePrinter;
+   private Image nodeWindows;
+   private Image nodeLinux;
+   private Image nodeFreeBSD;
 
    /**
     * Initialize object icons storage.
@@ -81,6 +89,13 @@ public final class ObjectIcons
       images.put(AbstractObject.OBJECT_NETWORKMAPROOT, ResourceManager.getImage(display, "icons/objects/netmap_root.gif"));
       images.put(AbstractObject.OBJECT_NETWORKSERVICE, ResourceManager.getImage(display, "icons/objects/network_service.png"));
       images.put(AbstractObject.OBJECT_NODE, ResourceManager.getImage(display, "icons/objects/node.png"));
+
+      nodeSwitch = createNodeIcon(display, "icons/netmap/objects/switch.png");
+      nodeRouter = createNodeIcon(display, "icons/netmap/objects/router.png");
+      nodePrinter = createNodeIcon(display, "icons/netmap/objects/printer.png");
+      nodeWindows = createNodeIcon(display, "icons/netmap/objects/windowsserver.png");
+      nodeLinux = createNodeIcon(display, "icons/netmap/objects/linuxserver.png");
+      nodeFreeBSD = createNodeIcon(display, "icons/netmap/objects/freebsdserver.png");
       images.put(AbstractObject.OBJECT_RACK, ResourceManager.getImage(display, "icons/objects/rack.gif"));
       images.put(AbstractObject.OBJECT_SENSOR, ResourceManager.getImage(display, "icons/objects/sensor.gif"));
       images.put(AbstractObject.OBJECT_SERVICEROOT, ResourceManager.getImage(display, "icons/objects/service_root.png"));
@@ -99,7 +114,56 @@ public final class ObjectIcons
       display.disposeExec(() -> {
          for(Image i : images.values())
             i.dispose();
+         nodeSwitch.dispose();
+         nodeRouter.dispose();
+         nodePrinter.dispose();
+         nodeWindows.dispose();
+         nodeLinux.dispose();
+         nodeFreeBSD.dispose();
       });
+   }
+
+   /**
+    * Create a 16x16 object-browser icon from an existing network map image.
+    *
+    * @param display current display
+    * @param path image resource path
+    * @return scaled icon image
+    */
+   private static Image createNodeIcon(Display display, String path)
+   {
+      ImageData imageData = ResourceManager.getImageData(path);
+      return new Image(display, imageData.scaledTo(16, 16));
+   }
+
+   /**
+    * Get icon image for a node using its discovered capabilities and platform.
+    *
+    * @param node node object
+    * @return icon image for node
+    */
+   public Image getImage(Node node)
+   {
+      long capabilities = node.getCapabilities();
+      if ((capabilities & Node.NC_IS_BRIDGE) != 0)
+         return nodeSwitch;
+      if ((capabilities & Node.NC_IS_ROUTER) != 0)
+         return nodeRouter;
+      if ((capabilities & Node.NC_IS_PRINTER) != 0)
+         return nodePrinter;
+
+      String platformName = node.getPlatformName();
+      if (platformName != null)
+      {
+         if (platformName.startsWith("windows"))
+            return nodeWindows;
+         if (platformName.startsWith("Linux"))
+            return nodeLinux;
+         if (platformName.startsWith("FreeBSD"))
+            return nodeFreeBSD;
+      }
+
+      return getImage(AbstractObject.OBJECT_NODE);
    }
 
    /**
