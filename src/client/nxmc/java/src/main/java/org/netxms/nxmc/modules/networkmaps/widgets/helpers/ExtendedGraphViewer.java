@@ -139,6 +139,7 @@ public class ExtendedGraphViewer extends GraphViewer
    private Point backgroundDragStart = null; // in absolute screen coordinates
    private org.eclipse.draw2d.geometry.Point backgroundDragStartViewLocation = null;
    private org.eclipse.draw2d.geometry.Point objectDragLastPosition = null;
+   private boolean objectPressed = false; // primary button went down on a map object (node or link), not on the background
    private boolean boxSelectionActive = false;
    private boolean boxSelectionAdditive = false; // modifier state latched at press time (RWT drag events carry no modifiers)
    private org.eclipse.draw2d.geometry.Point boxSelectionStart = null; // in map coordinates
@@ -302,6 +303,8 @@ public class ExtendedGraphViewer extends GraphViewer
             if (me.button != 1)
                return;
 
+            objectPressed = false;
+
             // Don't start background drag if object drag is in progress
             if (dragStarted)
                return;
@@ -367,6 +370,27 @@ public class ExtendedGraphViewer extends GraphViewer
          }
       });
 
+      // Presses on map objects reach the object layer, presses on the background reach the background layer (below). A drag that
+      // starts on an object while object movement is enabled moves the object, so map input must not pan the view for it.
+      graph.getZestRootLayer().addMouseListener(new MouseListener() {
+         @Override
+         public void mousePressed(MouseEvent me)
+         {
+            objectPressed = (me.button == 1);
+         }
+
+         @Override
+         public void mouseReleased(MouseEvent me)
+         {
+            objectPressed = false;
+         }
+
+         @Override
+         public void mouseDoubleClicked(MouseEvent me)
+         {
+         }
+      });
+
       // Continuous pointer input (pinch, touch drag, mouse wheel, mouse drag). On the desktop client this is a no-op, because SWT
       // delivers mouse move and mouse wheel to the canvas directly. In the web client RAP delivers neither, so gestures are
       // classified and coalesced in the browser and arrive here already throttled to animation frame cadence.
@@ -393,6 +417,11 @@ public class ExtendedGraphViewer extends GraphViewer
          @Override
          public void onPan(int dx, int dy)
          {
+            // MapInputWidget runs gestures after the SWT events of the same request, so the press that started this one has
+            // already been seen here
+            if (objectPressed && draggingEnabled)
+               return;
+
             // Moving the pointer right moves the content right, so the view location moves the opposite way.
             setViewLocationClamped(graph.getViewport().getViewLocation().getCopy().translate(-dx, -dy));
 

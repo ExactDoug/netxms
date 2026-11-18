@@ -66,17 +66,24 @@ public class MapInputWidget
          @Override
          public void handleNotify(String event, JsonObject properties)
          {
-            // A gesture arrives on the RAP request thread. If a handler throws - most plausibly because the map view is being
-            // torn down while a touch is still in flight - the exception would escape into RAP's operation dispatch. Contain it
-            // here: a dropped gesture is recoverable, a broken session is not, and a map is often left open for days in kiosk mode.
-            try
-            {
-               handleEvent(event, properties);
-            }
-            catch(Exception e)
-            {
-               logger.debug("Exception while handling map input event \"" + event + "\"", e);
-            }
+            // RAP calls this while it is still reading the request, but dispatches the SWT events of the same request (such as
+            // the mouse press that started this gesture) later. Handling the gesture here would therefore see it before that
+            // press, so it is queued to run in order with them.
+            control.getDisplay().asyncExec(() -> {
+               if (control.isDisposed())
+                  return;
+               // If a handler throws - most plausibly because the map view is being torn down while a touch is still in
+               // flight - contain it: a dropped gesture is recoverable, a broken session is not, and a map is often left open
+               // for days in kiosk mode.
+               try
+               {
+                  handleEvent(event, properties);
+               }
+               catch(Exception e)
+               {
+                  logger.debug("Exception while handling map input event \"" + event + "\"", e);
+               }
+            });
          }
       });
       remoteObject.set("parent", WidgetUtil.getId(control));
