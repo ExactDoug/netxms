@@ -72,6 +72,14 @@
 	var PREVIEW_TIMEOUT = 5000;
 
 	/**
+	 * A one-finger pan is previewed the same way, but only the visible part of the map exists in the
+	 * browser, so moving it uncovers blank edges. While the finger moves, the pan so far is therefore
+	 * sent whenever the previous one has been drawn and the map has moved at least this far (px): the
+	 * map follows the finger at once, and the edges fill in at whatever rate the round trip allows.
+	 */
+	var PAN_COMMIT_DISTANCE = 48;
+
+	/**
 	 * Transforms of the viewport offset V (canvas pixels): V' = s * V + (tx, ty). On screen the same
 	 * transform moves a canvas point p to s * p - (tx, ty).
 	 */
@@ -363,6 +371,9 @@
 				this.consumed = true;
 				this.cancelLongPress();
 			}
+			if (!this.previewing) {
+				this.startPreview();
+			}
 
 			this.queuePan(t.clientX - this.lastX, t.clientY - this.lastY);
 			this.lastX = t.clientX;
@@ -548,6 +559,7 @@
 				self.frame = null;
 				if (self.previewing) {
 					self.showPreview();
+					self.commitPanIfIdle();
 				} else {
 					self.flush();
 				}
@@ -639,6 +651,22 @@
 			}, PREVIEW_TIMEOUT);
 		},
 
+		/**
+		 * During a one-finger pan, send the pan so far if nothing sent earlier is still waiting to be drawn
+		 * and it has moved far enough to uncover a noticeable strip. A pinch is sent only when it settles.
+		 */
+		commitPanIfIdle : function() {
+			if (!this.previewing || this.pinching || this.scale !== 1.0) {
+				return;
+			}
+			if (this.previewInFlight.length > 0 || !isIdentity(this.previewUnsent)) {
+				return;
+			}
+			if (Math.abs(this.transX) >= PAN_COMMIT_DISTANCE || Math.abs(this.transY) >= PAN_COMMIT_DISTANCE) {
+				this.commitPreview();
+			}
+		},
+
 		previewSent : function() {
 			if (!isIdentity(this.previewUnsent)) {
 				this.previewInFlight.push(this.previewUnsent);
@@ -656,6 +684,7 @@
 				this.previewTimeoutTimer = null;
 			}
 			this.showPreview();
+			this.commitPanIfIdle(); // the finger may have kept moving while that redraw was on its way
 		},
 
 		/**
