@@ -138,7 +138,8 @@ public class ExtendedGraphViewer extends GraphViewer
    private boolean backgroundDragged = false;
    private Point backgroundDragStart = null; // in absolute screen coordinates
    private org.eclipse.draw2d.geometry.Point backgroundDragStartViewLocation = null;
-   private org.eclipse.draw2d.geometry.Point objectDragLastPosition = null;
+   private org.eclipse.draw2d.geometry.Point objectDragStart = null; // press location of an object drag, object layer coordinates
+   private Map<CGraphNode, org.eclipse.draw2d.geometry.Point> objectDragOrigins = new HashMap<>(); // dragged nodes, locations before the drag
    private int dragPanGesture = 0; // mouse drag the ownership below was decided for
    private boolean dragPanOnObject = false; // that drag started on a map object while object movement was enabled
    private int figureZoomIndex = -1; // zoom level bucket the figures were last rebuilt for on a zoom change
@@ -456,6 +457,9 @@ public class ExtendedGraphViewer extends GraphViewer
 		   // event and the release to whatever figure is under the cursor, and in the web client, which sees the cursor only every
 		   // 200 ms during a drag (RAPDragTracker), the cursor is often past the object: the move was then not saved when the button
 		   // was released off the object, and on a map without a fixed size the drag was not finished at all.
+		   // The listeners below also move the objects, instead of Zest: Zest adds the grab offset scaled by the zoom to an unscaled
+		   // cursor location, which shifts a grabbed object by (zoom - 1) times the offset and spreads multiple selected objects apart.
+		   graph.setDraggingEnabled(false);
 		   MouseListener moveMouseListener = new MouseListener() {
             @Override
             public void mouseReleased(MouseEvent me)
@@ -467,24 +471,16 @@ public class ExtendedGraphViewer extends GraphViewer
                   return;
                dragStarted = false;
 
-               // Zest has placed the objects for the last drag event; finish the move where the button was released
-               int dx = me.x - objectDragLastPosition.x;
-               int dy = me.y - objectDragLastPosition.y;
-               objectDragLastPosition = null;
-               boolean save = getLayoutAlgorithm() instanceof ManualLayout;
-               for(Object o : graph.getSelection())
+               moveDraggedObjects(me.x, me.y); // where the button was released, not where the last drag event saw the cursor
+               if (getLayoutAlgorithm() instanceof ManualLayout)
                {
-                  if (!(o instanceof CGraphNode))
-                     continue;
-                  CGraphNode n = (CGraphNode)o;
-                  if ((dx != 0) || (dy != 0))
+                  for(CGraphNode n : objectDragOrigins.keySet())
                   {
-                     org.eclipse.draw2d.geometry.Point p = n.getLocation();
-                     n.setLocation(p.x + dx, p.y + dy);
+                     if (n.getFigure() instanceof ObjectFigure)
+                        moveCallback.onMove(((ObjectFigure)n.getFigure()).getMapElement());
                   }
-                  if (save && (n.getFigure() instanceof ObjectFigure))
-                     moveCallback.onMove(((ObjectFigure)n.getFigure()).getMapElement());
                }
+               objectDragOrigins.clear();
                unblockRefresh();
             }
 
@@ -498,6 +494,7 @@ public class ExtendedGraphViewer extends GraphViewer
                if (!isObjectAt(p.x, p.y))
                   return;
                objectDragCaptured = true;
+               objectDragStart = new org.eclipse.draw2d.geometry.Point(me.x, me.y);
                if (snapToGrid)
                   clearMovedState(); // snap to grid listener does not see this press
                me.consume(); // makes the event dispatcher capture the mouse on this layer until the release
@@ -540,12 +537,14 @@ public class ExtendedGraphViewer extends GraphViewer
                {
                   dragStarted = true;
                   blockRefresh();
-                  objectDragLastPosition = new org.eclipse.draw2d.geometry.Point(me.x, me.y);
+                  // Taken here, not at the press: a map update in between replaces the nodes (and selects the new ones)
+                  for(Object o : graph.getSelection())
+                  {
+                     if (o instanceof CGraphNode)
+                        objectDragOrigins.put((CGraphNode)o, ((CGraphNode)o).getLocation().getCopy());
+                  }
                }
-               else
-               {
-                  objectDragLastPosition.setLocation(me.x, me.y);
-               }
+               moveDraggedObjects(me.x, me.y);
             }
          };
          graph.getZestRootLayer().addMouseListener(moveMouseListener);
@@ -1306,6 +1305,20 @@ public class ExtendedGraphViewer extends GraphViewer
    }
 
 
+   /**
+    * Move the dragged objects by the cursor movement since the press (object layer coordinates, unscaled like node locations).
+    *
+    * @param x current cursor X
+    * @param y current cursor Y
+    */
+   private void moveDraggedObjects(int x, int y)
+   {
+      int dx = x - objectDragStart.x;
+      int dy = y - objectDragStart.y;
+      for(Map.Entry<CGraphNode, org.eclipse.draw2d.geometry.Point> e : objectDragOrigins.entrySet())
+         e.getKey().setLocation(e.getValue().x + dx, e.getValue().y + dy);
+   }
+
 	/**
 	 * Clear the moved state of all objects, so that snap to grid aligns only the objects moved after this call.
 	 */
@@ -1408,7 +1421,8 @@ public class ExtendedGraphViewer extends GraphViewer
    public void setDraggingEnabled(boolean draggingEnabled)
    {
       this.draggingEnabled = draggingEnabled;
-      graph.setDraggingEnabled(draggingEnabled);
+      if (moveCallback == null)
+         graph.setDraggingEnabled(draggingEnabled); // otherwise objects are moved by this viewer, not by Zest
    }
 
    /**
