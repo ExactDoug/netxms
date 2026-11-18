@@ -116,7 +116,7 @@
 
 		properties : [ "view" ],
 
-		events : [ "zoom", "pan" ]
+		events : [ "zoom", "pan", "dragpan" ]
 	});
 
 	/**
@@ -500,6 +500,11 @@
 			this.mouseMoved = false;
 			this.lastMouseX = e.clientX;
 			this.lastMouseY = e.clientY;
+			// The server decides from where a drag started whether it pans the view or moves an object
+			var rect = this.node.getBoundingClientRect();
+			this.mouseGesture = (this.mouseGesture || 0) + 1;
+			this.mouseStartX = Math.round(e.clientX - rect.left);
+			this.mouseStartY = Math.round(e.clientY - rect.top);
 		},
 
 		pointerMove : function(e) {
@@ -519,8 +524,8 @@
 
 		pointerUp : function(e) {
 			if (this.mousePanning) {
+				this.flush(); // still a drag pan
 				this.mousePanning = false;
-				this.flush();
 			}
 		},
 
@@ -797,6 +802,14 @@
 					y : this.focalY,
 					dx : sendX,
 					dy : sendY
+				});
+			} else if ((sendX !== 0 || sendY !== 0) && this.mousePanning) {
+				remote.notify("dragpan", {
+					dx : sendX,
+					dy : sendY,
+					g : this.mouseGesture,
+					sx : this.mouseStartX,
+					sy : this.mouseStartY
 				});
 			} else if (sendX !== 0 || sendY !== 0) {
 				remote.notify("pan", {

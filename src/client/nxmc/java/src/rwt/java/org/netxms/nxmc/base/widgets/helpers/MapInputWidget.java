@@ -46,6 +46,7 @@ public class MapInputWidget
 
    private static final String EVENT_ZOOM = "zoom";
    private static final String EVENT_PAN = "pan";
+   private static final String EVENT_DRAG_PAN = "dragpan";
 
    private final RemoteObject remoteObject;
    private final MapInputListener listener;
@@ -67,8 +68,8 @@ public class MapInputWidget
          public void handleNotify(String event, JsonObject properties)
          {
             // RAP calls this while it is still reading the request, but dispatches the SWT events of the same request (such as
-            // the mouse press that started this gesture) later. Handling the gesture here would therefore see it before that
-            // press, so it is queued to run in order with them.
+            // the mouse events Draw2D drags objects with) later. Queue the gesture so that both apply in the order they
+            // happened.
             control.getDisplay().asyncExec(() -> {
                if (control.isDisposed())
                   return;
@@ -89,6 +90,7 @@ public class MapInputWidget
       remoteObject.set("parent", WidgetUtil.getId(control));
       remoteObject.listen(EVENT_ZOOM, true);
       remoteObject.listen(EVENT_PAN, true);
+      remoteObject.listen(EVENT_DRAG_PAN, true);
 
       control.addDisposeListener(new DisposeListener() {
          @Override
@@ -150,6 +152,11 @@ public class MapInputWidget
       else if (EVENT_PAN.equals(event))
       {
          listener.onPan(getIntProperty(properties, "dx"), getIntProperty(properties, "dy"));
+      }
+      else if (EVENT_DRAG_PAN.equals(event))
+      {
+         listener.onDragPan(getIntProperty(properties, "dx"), getIntProperty(properties, "dy"), getIntProperty(properties, "g"),
+               getIntProperty(properties, "sx"), getIntProperty(properties, "sy"));
       }
    }
 

@@ -139,7 +139,8 @@ public class ExtendedGraphViewer extends GraphViewer
    private Point backgroundDragStart = null; // in absolute screen coordinates
    private org.eclipse.draw2d.geometry.Point backgroundDragStartViewLocation = null;
    private org.eclipse.draw2d.geometry.Point objectDragLastPosition = null;
-   private boolean objectPressed = false; // primary button went down on a map object (node or link), not on the background
+   private int dragPanGesture = 0; // mouse drag the ownership below was decided for
+   private boolean dragPanOnObject = false; // that drag started on a map object while object movement was enabled
    private int figureZoomIndex = -1; // zoom level bucket the figures were last rebuilt for on a zoom change
    private boolean viewStateUpdateScheduled = false;
    private boolean boxSelectionActive = false;
@@ -305,8 +306,6 @@ public class ExtendedGraphViewer extends GraphViewer
             if (me.button != 1)
                return;
 
-            objectPressed = false;
-
             // Don't start background drag if object drag is in progress
             if (dragStarted)
                return;
@@ -385,27 +384,6 @@ public class ExtendedGraphViewer extends GraphViewer
       graph.getViewport().getHorizontalRangeModel().addPropertyChangeListener((e) -> scheduleViewStateUpdate());
       graph.getViewport().getVerticalRangeModel().addPropertyChangeListener((e) -> scheduleViewStateUpdate());
 
-      // Presses on map objects reach the object layer, presses on the background reach the background layer (below). A drag that
-      // starts on an object while object movement is enabled moves the object, so map input must not pan the view for it.
-      graph.getZestRootLayer().addMouseListener(new MouseListener() {
-         @Override
-         public void mousePressed(MouseEvent me)
-         {
-            objectPressed = (me.button == 1);
-         }
-
-         @Override
-         public void mouseReleased(MouseEvent me)
-         {
-            objectPressed = false;
-         }
-
-         @Override
-         public void mouseDoubleClicked(MouseEvent me)
-         {
-         }
-      });
-
       // Continuous pointer input (pinch, touch drag, mouse wheel, mouse drag). On the desktop client this is a no-op, because SWT
       // delivers mouse move and mouse wheel to the canvas directly. In the web client RAP delivers neither, so gestures are
       // classified and coalesced in the browser and arrive here already throttled to animation frame cadence.
@@ -429,17 +407,26 @@ public class ExtendedGraphViewer extends GraphViewer
          @Override
          public void onPan(int dx, int dy)
          {
-            // MapInputWidget runs gestures after the SWT events of the same request, so the press that started this one has
-            // already been seen here
-            if (objectPressed && draggingEnabled)
-               return;
-
             // Moving the pointer right moves the content right, so the view location moves the opposite way.
             setViewLocationClamped(graph.getViewport().getViewLocation().getCopy().translate(-dx, -dy));
 
             // The Draw2D drag tracker may also be running for this same mouse gesture; it computes its delta independently from
             // the cursor location and would double the movement. This path wins.
             backgroundDragActive = false;
+         }
+
+         @Override
+         public void onDragPan(int dx, int dy, int gesture, int startX, int startY)
+         {
+            // Decided once per drag, from the point where it started - not from the press event, which RAP drops when it arrives
+            // while a response is being applied, and which can reach the server after the drag's first pan
+            if (gesture != dragPanGesture)
+            {
+               dragPanGesture = gesture;
+               dragPanOnObject = draggingEnabled && isObjectAt(startX, startY);
+            }
+            if (!dragPanOnObject)
+               onPan(dx, dy);
          }
       });
 
@@ -951,6 +938,25 @@ public class ExtendedGraphViewer extends GraphViewer
 			getFactory().refresh(graph, element, updateLabels);
 		}
 	}
+
+   /**
+    * Check if a map object (node or link) is drawn at the given point of the control. Objects are in the Zest root layer; where
+    * there is none, the point belongs to the background.
+    *
+    * @param x X in control coordinates
+    * @param y Y in control coordinates
+    * @return true if there is a map object at that point
+    */
+   private boolean isObjectAt(int x, int y)
+   {
+      IFigure objectLayer = graph.getZestRootLayer();
+      for(IFigure f = graph.getLightweightSystem().getRootFigure().findFigureAt(x, y); f != null; f = f.getParent())
+      {
+         if (f.getParent() == objectLayer)
+            return true;
+      }
+      return false;
+   }
 
    /**
     * Send the current view state to the web client's map input handler, at most once per pass of the event loop however many

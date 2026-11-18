@@ -47,4 +47,17 @@ public interface MapInputListener
     * @param dy pointer movement along Y, in pixels
     */
    public void onPan(int dx, int dy);
+
+   /**
+    * Pan by a mouse drag. Unlike {@link #onPan(int, int)} the drag may belong to something else: a drag that starts on a map
+    * object while object movement is enabled moves the object, and must not also pan the view. That is decided once per drag,
+    * from where it started.
+    *
+    * @param dx pointer movement along X, in pixels
+    * @param dy pointer movement along Y, in pixels
+    * @param gesture identifies the drag; all pans of one drag carry the same value
+    * @param startX X of the point where the drag started, in pixels relative to the top left of the canvas
+    * @param startY Y of the point where the drag started, in pixels relative to the top left of the canvas
+    */
+   public void onDragPan(int dx, int dy, int gesture, int startX, int startY);
 }
