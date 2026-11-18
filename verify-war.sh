@@ -22,9 +22,19 @@ echo "== Verifying $WAR =="
 echo "   $(stat -c %s "$WAR") bytes   sha256=$(sha256sum "$WAR" | cut -d' ' -f1)"
 echo
 
-# The seven compiled translation bundles (cs de es fr iw pt_BR ru), each with a $1 inner class.
-check "i18n message bundles compiled" \
-  "$(unzip -l "$WAR" | grep -c 'WEB-INF/classes/i18n/Messages_.*\.class' || true)"
+# One compiled translation bundle per locale. The expected set is the .po files of the source tree this script sits
+# in, so it follows the release instead of a list written down once; a WAR missing any one of them fails.
+PO_DIR="$WORKTREE/src/client/nxmc/java/src/main/resources/po"
+CLASSES="$(unzip -l "$WAR" | grep -oE 'WEB-INF/classes/i18n/Messages_[A-Za-z_]+\.class' || true)"
+if compgen -G "$PO_DIR/*.po" >/dev/null; then
+  for po in "$PO_DIR"/*.po; do
+    locale="$(basename "$po" .po)"
+    check "i18n message bundle $locale" "$(grep -cx "WEB-INF/classes/i18n/Messages_${locale}\.class" <<< "$CLASSES" || true)"
+  done
+else
+  echo "warn: no .po files at $PO_DIR - cannot tell which locales to expect, checking only that some exist"
+  check "i18n message bundles compiled" "$(grep -c . <<< "$CLASSES" || true)"
+fi
 
 # The version resource lives INSIDE netxms-base-*.jar, not at the WAR top level. Without it,
 # VersionInfo falls back to netxms-version.properties and the console reports 6.1-SNAPSHOT /
