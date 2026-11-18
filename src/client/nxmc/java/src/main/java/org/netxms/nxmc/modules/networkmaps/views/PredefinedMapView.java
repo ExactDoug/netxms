@@ -133,6 +133,7 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
    private Map<Long, Boolean> readOnlyFlagsCache = new HashMap<>();
    private Set<NetworkMapElement> movedElementList = new HashSet<>();
    private Set<NetworkMapLink> changedLinkList = new HashSet<>();
+   private long changesMapId = 0; // map that movedElementList and changedLinkList belong to
    private Map<Long, Point> unconfirmedLocations = new HashMap<>(); // element ID -> location saved but not yet seen in the server's copy
    private MapObjectSyncer mapObjectSyncer = null;
    private int mapWidth;
@@ -1724,6 +1725,7 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
       synchronized(movedElementList)
       {
          movedElementList.add(element);
+         changesMapId = getMapObject().getObjectId();
          if (!saveSchedulted)
          {
             saveSchedulted = true;
@@ -1748,6 +1750,7 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
       synchronized(movedElementList)
       {
          changedLinkList.add(link);
+         changesMapId = getMapObject().getObjectId();
          if (!saveSchedulted)
          {
             saveSchedulted = true;
@@ -1786,11 +1789,14 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
       if (!saveSchedulted)
          return;
 
+      // Not getMapObject(): when contextChanged() flushes the previous map's changes, the view already shows the new map
+      final long mapId;
       final Set<NetworkMapElement> elementListLocalCopy;
       final Set<NetworkMapLink> linkListLocalCopy;
       synchronized(movedElementList)
       {
          saveSchedulted = false;
+         mapId = changesMapId;
          elementListLocalCopy = movedElementList;
          movedElementList = new HashSet<NetworkMapElement>();
          linkListLocalCopy = changedLinkList;
@@ -1811,12 +1817,16 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
          {
             try
             {
-               session.updateNetworkMapElementPosition(getMapObject().getObjectId(), elementListLocalCopy, linkListLocalCopy);
+               session.updateNetworkMapElementPosition(mapId, elementListLocalCopy, linkListLocalCopy);
             }
             catch(Exception e)
             {
-               // Not saved: let the next map update show the server's locations again
-               runInUIThread(() -> savedLocations.forEach((id, location) -> unconfirmedLocations.remove(id, location)));
+               // Not saved: let the next map update show the server's locations again (if the view still shows that map)
+               runInUIThread(() -> {
+                  NetworkMap map = getMapObject();
+                  if ((map != null) && (map.getObjectId() == mapId))
+                     savedLocations.forEach((id, location) -> unconfirmedLocations.remove(id, location));
+               });
                throw e;
             }
          }
