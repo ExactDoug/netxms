@@ -690,6 +690,13 @@ public class ExtendedGraphViewer extends GraphViewer
 				}
 			}
 		}
+
+      // Graph.applyLayout() places the new nodes only in a later pass of the event loop, and in the web client the mouse events
+      // of the next request are dispatched first: a drag that started right after a map update took every node at its initial
+      // (0,0) location as the drag origin, moved the object to the corner of the map and saved it there. With a manual layout
+      // the locations are known now.
+      if (getLayoutAlgorithm() instanceof ManualLayout)
+         graph.applyLayoutNow();
 	}
 
 	/**
