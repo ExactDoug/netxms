@@ -133,6 +133,7 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
    private Map<Long, Boolean> readOnlyFlagsCache = new HashMap<>();
    private Set<NetworkMapElement> movedElementList = new HashSet<>();
    private Set<NetworkMapLink> changedLinkList = new HashSet<>();
+   private Map<Long, Point> unconfirmedLocations = new HashMap<>(); // element ID -> location saved but not yet seen in the server's copy
    private MapObjectSyncer mapObjectSyncer = null;
    private int mapWidth;
    private int mapHeight;
@@ -184,6 +185,7 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
          bendpointEditor.stop();
       viewer.resetRefreshBlock();
       saveObjectPositions();
+      unconfirmedLocations.clear(); // element IDs are per map
 
       if (oldContext != null)
       {
@@ -495,6 +497,7 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
 	   {
 	      disableLinkTextAutoUpdate = mapObject.isDontUpdateLinkText();
 	      mapPage = mapObject.createMapPage();
+	      applyUnconfirmedLocations();
 	   }
 	   else
 	   {
@@ -503,6 +506,26 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
 
       refreshDciRequestList(oldMapPage, true);
 	}
+
+   /**
+    * Keep elements moved in this view where the user put them until the server's copy of the map shows their new location. The
+    * map page is rebuilt from the server's copy on every map update (status changes included), and an update that arrives before
+    * the server has applied the save would otherwise put the elements back where they were.
+    */
+   private void applyUnconfirmedLocations()
+   {
+      Iterator<Map.Entry<Long, Point>> it = unconfirmedLocations.entrySet().iterator();
+      while(it.hasNext())
+      {
+         Map.Entry<Long, Point> e = it.next();
+         NetworkMapElement element = mapPage.getElement(e.getKey(), NetworkMapElement.class);
+         Point location = e.getValue();
+         if ((element == null) || ((element.getX() == location.x) && (element.getY() == location.y)))
+            it.remove(); // element removed from the map, or the server has the new location
+         else
+            element.setLocation(location.x, location.y);
+      }
+   }
 
 	/**
 	 * Synchronize objects, required when interface objects are placed on the map
@@ -1777,11 +1800,25 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
       if (elementListLocalCopy.size() > 0)
          updateObjectPositions();
 
+      final Map<Long, Point> savedLocations = new HashMap<>();
+      for(NetworkMapElement e : elementListLocalCopy)
+         savedLocations.put(e.getId(), new Point(e.getX(), e.getY()));
+      unconfirmedLocations.putAll(savedLocations);
+
       new Job(i18n.tr("Save object's new positions"), this) {
          @Override
          protected void run(IProgressMonitor monitor) throws Exception
          {
-            session.updateNetworkMapElementPosition(getMapObject().getObjectId(), elementListLocalCopy, linkListLocalCopy);
+            try
+            {
+               session.updateNetworkMapElementPosition(getMapObject().getObjectId(), elementListLocalCopy, linkListLocalCopy);
+            }
+            catch(Exception e)
+            {
+               // Not saved: let the next map update show the server's locations again
+               runInUIThread(() -> savedLocations.forEach((id, location) -> unconfirmedLocations.remove(id, location)));
+               throw e;
+            }
          }
 
          @Override
