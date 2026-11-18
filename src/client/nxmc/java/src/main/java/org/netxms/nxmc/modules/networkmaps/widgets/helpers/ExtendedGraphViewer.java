@@ -141,6 +141,7 @@ public class ExtendedGraphViewer extends GraphViewer
    private org.eclipse.draw2d.geometry.Point objectDragLastPosition = null;
    private boolean objectPressed = false; // primary button went down on a map object (node or link), not on the background
    private int figureZoomIndex = -1; // zoom level bucket the figures were last rebuilt for on a zoom change
+   private boolean viewStateUpdateScheduled = false;
    private boolean boxSelectionActive = false;
    private boolean boxSelectionAdditive = false; // modifier state latched at press time (RWT drag events carry no modifiers)
    private org.eclipse.draw2d.geometry.Point boxSelectionStart = null; // in map coordinates
@@ -352,6 +353,8 @@ public class ExtendedGraphViewer extends GraphViewer
          @Override
          public void zoomChanged(double zoom)
          {
+            scheduleViewStateUpdate();
+
             // The zoom manager scales the figures itself. They depend on the zoom only through the label fonts, which change per
             // zoom level bucket, so the graph is rebuilt only when the zoom moves into another bucket - not on every step of a
             // continuous zoom (pinch, mouse wheel), which would rebuild every figure once per animation frame.
@@ -377,6 +380,10 @@ public class ExtendedGraphViewer extends GraphViewer
                zoomToCursor(event.count > 0, event.x, event.y);
          }
       });
+
+      // Viewport position, extent and size changes all show up in its range models
+      graph.getViewport().getHorizontalRangeModel().addPropertyChangeListener((e) -> scheduleViewStateUpdate());
+      graph.getViewport().getVerticalRangeModel().addPropertyChangeListener((e) -> scheduleViewStateUpdate());
 
       // Presses on map objects reach the object layer, presses on the background reach the background layer (below). A drag that
       // starts on an object while object movement is enabled moves the object, so map input must not pan the view for it.
@@ -944,6 +951,28 @@ public class ExtendedGraphViewer extends GraphViewer
 			getFactory().refresh(graph, element, updateLabels);
 		}
 	}
+
+   /**
+    * Send the current view state to the web client's map input handler, at most once per pass of the event loop however many
+    * changes the pass makes.
+    */
+   private void scheduleViewStateUpdate()
+   {
+      if (viewStateUpdateScheduled)
+         return;
+      viewStateUpdateScheduled = true;
+      graph.getDisplay().asyncExec(() -> {
+         viewStateUpdateScheduled = false;
+         if (graph.isDisposed())
+            return;
+         // Same quantities setViewLocationClamped() clamps with
+         org.eclipse.draw2d.geometry.Point location = graph.getViewport().getViewLocation();
+         org.eclipse.draw2d.geometry.Rectangle viewportArea = graph.getViewport().getClientArea();
+         Dimension mapSize = backgroundLayer.getSize();
+         WidgetHelper.updateMapInputViewState(graph, location.x, location.y, mapSize.width, mapSize.height, viewportArea.width,
+               viewportArea.height, getZoom(), zoomLevels[0], zoomLevels[zoomLevels.length - 1]);
+      });
+   }
 
    /**
     * Set viewport location, clamped so that the view cannot be scrolled outside the map.

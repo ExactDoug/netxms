@@ -1530,7 +1530,32 @@ public class WidgetHelper
     */
    public static void attachMapInputListener(Control control, MapInputListener listener)
    {
-      new MapInputWidget(control, listener);
+      control.setData(MAP_INPUT_WIDGET, new MapInputWidget(control, listener));
+   }
+
+   private static final String MAP_INPUT_WIDGET = "netxms.MapInputWidget";
+
+   /**
+    * Tell the map input handler attached to a control where the view is and how far it may go (web client only). The browser
+    * previews gestures before the server has applied them, and needs this to stop at the same edges and zoom limits.
+    *
+    * @param control control the map input listener is attached to
+    * @param viewX view location X
+    * @param viewY view location Y
+    * @param mapWidth map width at zoom 1, as used to clamp the view
+    * @param mapHeight map height at zoom 1, as used to clamp the view
+    * @param viewWidth visible area width
+    * @param viewHeight visible area height
+    * @param zoom current zoom
+    * @param minZoom smallest zoom accepted
+    * @param maxZoom largest zoom accepted
+    */
+   public static void updateMapInputViewState(Control control, int viewX, int viewY, int mapWidth, int mapHeight, int viewWidth,
+         int viewHeight, double zoom, double minZoom, double maxZoom)
+   {
+      Object widget = control.getData(MAP_INPUT_WIDGET);
+      if (widget instanceof MapInputWidget)
+         ((MapInputWidget)widget).setViewState(viewX, viewY, mapWidth, mapHeight, viewWidth, viewHeight, zoom, minZoom, maxZoom);
    }
 
    /**

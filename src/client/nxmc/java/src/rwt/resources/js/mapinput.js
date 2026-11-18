@@ -102,7 +102,7 @@
 
 		destructor : "destroy",
 
-		properties : [ ],
+		properties : [ "view" ],
 
 		events : [ "zoom", "pan" ]
 	});
@@ -237,8 +237,9 @@
 		// first unsent (waiting for RAP's next request), then in flight (waiting for its response).
 		this.previewing = false;
 		this.previewCanvas = null;
-		this.previewUnsent = IDENTITY;
-		this.previewInFlight = [];
+		this.previewUnsent = []; // records of what was sent: { s, tx, ty } as accumulated, and the focal point fx, fy sent with it
+		this.previewInFlight = []; // one array of records per request
+		this.view = null; // the server's view state for the rendered frame, see setView()
 		this.previewSettleTimer = null;
 		this.previewTimeoutTimer = null;
 
@@ -593,14 +594,15 @@
 			if (canvas === null) {
 				return;
 			}
-			var t = IDENTITY;
+			var records = [];
 			for (var i = 0; i < this.previewInFlight.length; i++) {
-				t = compose(t, this.previewInFlight[i]);
+				records = records.concat(this.previewInFlight[i]);
 			}
-			t = compose(t, this.previewUnsent);
+			records = records.concat(this.previewUnsent);
 			if (this.previewing) {
-				t = compose(t, { s : this.scale, tx : this.transX, ty : this.transY });
+				records.push(this.accumulatedRecord());
 			}
+			var t = (this.view !== null) ? this.replayServer(records) : records.reduce(compose, IDENTITY);
 			if (isIdentity(t)) {
 				canvas.style.transform = "";
 				canvas.style.transformOrigin = "";
@@ -618,6 +620,53 @@
 		},
 
 		/**
+		 * What is accumulated but not yet sent, as a record like those flush() sends.
+		 */
+		accumulatedRecord : function() {
+			return {
+				s : this.scale,
+				tx : this.transX,
+				ty : this.transY,
+				fx : this.zoomPending ? this.focalX : 0,
+				fy : this.zoomPending ? this.focalY : 0
+			};
+		},
+
+		/**
+		 * Where the server will put the view once it has applied these records, as a transform from the
+		 * rendered frame. Each record is replayed exactly as ExtendedGraphViewer applies it: zoom (clamped to
+		 * the zoom range) about the focal point, then pan, then keep the view inside the map. Without this the
+		 * preview could go past an edge or a zoom limit and then jump back when the redraw arrived.
+		 */
+		replayServer : function(records) {
+			var v = this.view;
+			var z = v.zoom;
+			var x = v.x;
+			var y = v.y;
+			for (var i = 0; i < records.length; i++) {
+				var r = records[i];
+				var a = Math.min(v.maxZoom, Math.max(v.minZoom, z * r.s)) / z;
+				var dx = (r.s - 1) * r.fx - r.tx; // the pan flush() sends with this record
+				var dy = (r.s - 1) * r.fy - r.ty;
+				x = a * (x + r.fx) - r.fx - dx;
+				y = a * (y + r.fy) - r.fy - dy;
+				z = z * a;
+				x = Math.max(0, Math.min(x, v.w * z - v.vw));
+				y = Math.max(0, Math.min(y, v.h * z - v.vh));
+			}
+			var s = z / v.zoom;
+			return { s : s, tx : x - s * v.x, ty : y - s * v.y };
+		},
+
+		/**
+		 * The server's view state, sent with every response that changes it - so it always describes the
+		 * frame the browser has just drawn.
+		 */
+		setView : function(view) {
+			this.view = view;
+		},
+
+		/**
 		 * Send the previewed transform. The preview stays on screen until the redraw for it has been applied.
 		 */
 		commitPreview : function() {
@@ -629,14 +678,16 @@
 				window.cancelAnimationFrame(this.frame);
 				this.frame = null;
 			}
-			var accumulated = { s : this.scale, tx : this.transX, ty : this.transY };
-			if (isIdentity(accumulated)) {
+			var record = this.accumulatedRecord();
+			if (isIdentity(record)) {
 				this.showPreview();
 				return;
 			}
 			this.flush(true);
 			// What was sent is the accumulated transform less the sub-pixel remainder flush() kept back
-			this.previewUnsent = compose(this.previewUnsent, { s : accumulated.s, tx : accumulated.tx - this.transX, ty : accumulated.ty - this.transY });
+			record.tx -= this.transX;
+			record.ty -= this.transY;
+			this.previewUnsent.push(record);
 			this.showPreview();
 
 			var self = this;
@@ -645,7 +696,7 @@
 			}
 			this.previewTimeoutTimer = setTimeout(function() {
 				self.previewTimeoutTimer = null;
-				self.previewUnsent = IDENTITY;
+				self.previewUnsent = [];
 				self.previewInFlight = [];
 				self.showPreview();
 			}, PREVIEW_TIMEOUT);
@@ -659,7 +710,7 @@
 			if (!this.previewing || this.pinching || this.scale !== 1.0) {
 				return;
 			}
-			if (this.previewInFlight.length > 0 || !isIdentity(this.previewUnsent)) {
+			if (this.previewInFlight.length > 0 || this.previewUnsent.length > 0) {
 				return;
 			}
 			if (Math.abs(this.transX) >= PAN_COMMIT_DISTANCE || Math.abs(this.transY) >= PAN_COMMIT_DISTANCE) {
@@ -668,9 +719,9 @@
 		},
 
 		previewSent : function() {
-			if (!isIdentity(this.previewUnsent)) {
+			if (this.previewUnsent.length > 0) {
 				this.previewInFlight.push(this.previewUnsent);
-				this.previewUnsent = IDENTITY;
+				this.previewUnsent = [];
 			}
 		},
 
@@ -679,7 +730,7 @@
 				return;
 			}
 			this.previewInFlight.shift();
-			if (this.previewInFlight.length === 0 && isIdentity(this.previewUnsent) && this.previewTimeoutTimer !== null) {
+			if (this.previewInFlight.length === 0 && this.previewUnsent.length === 0 && this.previewTimeoutTimer !== null) {
 				clearTimeout(this.previewTimeoutTimer);
 				this.previewTimeoutTimer = null;
 			}

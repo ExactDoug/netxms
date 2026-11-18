@@ -100,6 +100,36 @@ public class MapInputWidget
    }
 
    /**
+    * Tell the browser where the view is and how far it may go, so that its gesture preview stops where the server will stop
+    * instead of overshooting and jumping back when the server's redraw arrives.
+    *
+    * @param viewX view location X (scaled pixels)
+    * @param viewY view location Y (scaled pixels)
+    * @param mapWidth map width at zoom 1, as used to clamp the view
+    * @param mapHeight map height at zoom 1, as used to clamp the view
+    * @param viewWidth visible area width
+    * @param viewHeight visible area height
+    * @param zoom current zoom
+    * @param minZoom smallest zoom accepted
+    * @param maxZoom largest zoom accepted
+    */
+   public void setViewState(int viewX, int viewY, int mapWidth, int mapHeight, int viewWidth, int viewHeight, double zoom, double minZoom,
+         double maxZoom)
+   {
+      JsonObject state = new JsonObject();
+      state.add("x", viewX);
+      state.add("y", viewY);
+      state.add("w", mapWidth);
+      state.add("h", mapHeight);
+      state.add("vw", viewWidth);
+      state.add("vh", viewHeight);
+      state.add("zoom", zoom);
+      state.add("minZoom", minZoom);
+      state.add("maxZoom", maxZoom);
+      remoteObject.set("view", state);
+   }
+
+   /**
     * Handle client side event.
     *
     * @param event event name
