@@ -701,23 +701,25 @@
 
 			var remote = rap.getRemoteObject(this);
 
-			var scale = 1.0;
-			if (this.zoomPending) {
-				scale = unclamped ? this.scale : Math.min(MAX_STEP_IN, Math.max(MAX_STEP_OUT, this.scale));
-				remote.notify("zoom", {
-					factor : scale,
-					x : this.focalX,
-					y : this.focalY
-				});
-			}
-
 			// The server zooms about the focal point F and then pans by D: V' = scale * (V + F) - F - D.
-			// The D that makes this equal the accumulated transform is (scale - 1) * F - trans.
-			var dx = (scale - 1) * (this.zoomPending ? this.focalX : 0) - this.transX;
-			var dy = (scale - 1) * (this.zoomPending ? this.focalY : 0) - this.transY;
+			// The D that makes this equal the accumulated transform is (scale - 1) * F - trans. It is computed
+			// from the scale accumulated, not the one sent: D is the movement left over once the zoom about F is
+			// taken out, which does not depend on how far the zoom goes - so it stays right when the step is
+			// capped below, or when the server clamps the zoom to the map's range.
+			var dx = (this.scale - 1) * (this.zoomPending ? this.focalX : 0) - this.transX;
+			var dy = (this.scale - 1) * (this.zoomPending ? this.focalY : 0) - this.transY;
 			var sendX = Math.round(dx);
 			var sendY = Math.round(dy);
-			if (sendX !== 0 || sendY !== 0) {
+			if (this.zoomPending) {
+				// One operation, so the server clamps the view to the map once, for the combined result
+				remote.notify("zoom", {
+					factor : unclamped ? this.scale : Math.min(MAX_STEP_IN, Math.max(MAX_STEP_OUT, this.scale)),
+					x : this.focalX,
+					y : this.focalY,
+					dx : sendX,
+					dy : sendY
+				});
+			} else if (sendX !== 0 || sendY !== 0) {
 				remote.notify("pan", {
 					dx : sendX,
 					dy : sendY

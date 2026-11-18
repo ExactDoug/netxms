@@ -404,22 +404,19 @@ public class ExtendedGraphViewer extends GraphViewer
       // classified and coalesced in the browser and arrive here already throttled to animation frame cadence.
       WidgetHelper.attachMapInputListener(graph, new MapInputListener() {
          @Override
-         public void onZoom(double factor, int x, int y)
+         public void onZoom(double factor, int x, int y, int dx, int dy)
          {
             double currentZoom = getZoom();
             org.eclipse.draw2d.geometry.Point viewLocation = graph.getViewport().getViewLocation().getCopy();
 
             zoomTo(currentZoom * factor); // ZoomManager clamps to the range derived from zoomLevels
 
-            // Keep the focal point of the gesture stationary. The applied factor is recomputed from the zoom that was actually
-            // accepted, so this stays correct when the zoom was clamped.
+            // Keep the focal point of the gesture stationary, then apply the pan, and clamp only the result. The applied factor
+            // is recomputed from the zoom that was actually accepted, so this stays correct when the zoom was clamped.
             double appliedFactor = getZoom() / currentZoom;
-            if (appliedFactor != 1.0)
-            {
-               int nx = (int)Math.round((viewLocation.x + x) * appliedFactor) - x;
-               int ny = (int)Math.round((viewLocation.y + y) * appliedFactor) - y;
-               setViewLocationClamped(new org.eclipse.draw2d.geometry.Point(nx, ny));
-            }
+            int nx = (int)Math.round((viewLocation.x + x) * appliedFactor) - x - dx;
+            int ny = (int)Math.round((viewLocation.y + y) * appliedFactor) - y - dy;
+            setViewLocationClamped(new org.eclipse.draw2d.geometry.Point(nx, ny));
          }
 
          @Override

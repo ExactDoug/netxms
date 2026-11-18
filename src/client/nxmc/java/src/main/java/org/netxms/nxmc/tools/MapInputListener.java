@@ -27,13 +27,17 @@ package org.netxms.nxmc.tools;
 public interface MapInputListener
 {
    /**
-    * Zoom by a relative factor around a focal point.
+    * Zoom by a relative factor around a focal point, then pan, as one step. A pinch that also moves carries both. The view
+    * must be clamped to the map once, for the combined result: clamping the zoom's own result first loses whatever part of it
+    * the pan was going to bring back inside the map.
     *
     * @param factor relative zoom factor (greater than 1 zooms in)
     * @param x focal point X, in pixels relative to the top left of the canvas
     * @param y focal point Y, in pixels relative to the top left of the canvas
+    * @param dx pointer movement along X after the zoom, in pixels (as for {@link #onPan(int, int)})
+    * @param dy pointer movement along Y after the zoom, in pixels
     */
-   public void onZoom(double factor, int x, int y);
+   public void onZoom(double factor, int x, int y, int dx, int dy);
 
    /**
     * Pan by a delta expressed as pointer movement. Moving the pointer right moves the map content right, so the view location moves

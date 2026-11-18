@@ -114,7 +114,8 @@ public class MapInputWidget
       {
          double factor = getDoubleProperty(properties, "factor", 1.0);
          if (factor > 0.0)
-            listener.onZoom(factor, getIntProperty(properties, "x"), getIntProperty(properties, "y"));
+            listener.onZoom(factor, getIntProperty(properties, "x"), getIntProperty(properties, "y"), getIntProperty(properties, "dx"),
+                  getIntProperty(properties, "dy"));
       }
       else if (EVENT_PAN.equals(event))
       {
