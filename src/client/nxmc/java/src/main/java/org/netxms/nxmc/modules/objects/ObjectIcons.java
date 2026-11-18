@@ -136,20 +136,20 @@ public final class ObjectIcons
     */
    private static Image createNodeIcon(Display display, String path)
    {
-      ImageData imageData = ResourceManager.getImageData(path);
-      if (imageData == null)
-      {
-         logger.warn("Cannot load node icon image from {}", path);
-         return null;
-      }
-
       try
       {
+         ImageData imageData = ResourceManager.getImageData(path);
+         if (imageData == null)
+         {
+            logger.warn("Cannot load node icon image from {}", path);
+            return null;
+         }
+
          return new Image(display, imageData.scaledTo(16, 16));
       }
       catch(SWTException e)
       {
-         logger.warn("Cannot create node icon image from {}", path, e);
+         logger.warn("Cannot load or create node icon image from {}", path, e);
          return null;
       }
    }
