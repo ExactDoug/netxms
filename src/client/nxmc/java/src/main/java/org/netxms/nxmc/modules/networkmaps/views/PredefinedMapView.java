@@ -251,6 +251,8 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
    @Override
    protected void onObjectUpdate(AbstractObject object)
    {
+      confirmLocations((NetworkMap)object);
+
       // Handle canvas-type changes (contextChanged doesn't fire — same object).
       ensureCorrectCanvas();
 
@@ -511,21 +513,35 @@ public class PredefinedMapView extends AbstractNetworkMapView implements ImageUp
    /**
     * Keep elements moved in this view where the user put them until the server's copy of the map shows their new location. The
     * map page is rebuilt from the server's copy on every map update (status changes included), and an update that arrives before
-    * the server has applied the save would otherwise put the elements back where they were.
+    * the server has applied the save would otherwise put the elements back where they were. Entries are removed only by
+    * confirmLocations().
     */
    private void applyUnconfirmedLocations()
    {
-      Iterator<Map.Entry<Long, Point>> it = unconfirmedLocations.entrySet().iterator();
-      while(it.hasNext())
+      for(Map.Entry<Long, Point> e : unconfirmedLocations.entrySet())
       {
-         Map.Entry<Long, Point> e = it.next();
          NetworkMapElement element = mapPage.getElement(e.getKey(), NetworkMapElement.class);
-         Point location = e.getValue();
-         if ((element == null) || ((element.getX() == location.x) && (element.getY() == location.y)))
-            it.remove(); // element removed from the map, or the server has the new location
-         else
-            element.setLocation(location.x, location.y);
+         if (element != null)
+            element.setLocation(e.getValue().x, e.getValue().y);
       }
+   }
+
+   /**
+    * Forget the unconfirmed locations that the server's copy of the map now shows, or whose elements are gone. Called with each map
+    * object as it arrives, before a page is built from it: a page shares the map object's elements, and applyUnconfirmedLocations()
+    * and updateObjectPositions() write local locations into them, so only a map object fresh from the server tells what it has.
+    *
+    * @param map map object received from the server
+    */
+   private void confirmLocations(NetworkMap map)
+   {
+      if (unconfirmedLocations.isEmpty())
+         return;
+      NetworkMapPage serverPage = map.createMapPage();
+      unconfirmedLocations.entrySet().removeIf(e -> {
+         NetworkMapElement element = serverPage.getElement(e.getKey(), NetworkMapElement.class);
+         return (element == null) || ((element.getX() == e.getValue().x) && (element.getY() == e.getValue().y));
+      });
    }
 
 	/**
