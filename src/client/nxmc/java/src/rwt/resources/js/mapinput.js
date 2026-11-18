@@ -379,8 +379,8 @@
 			if (!this.onCanvas(e.target)) {
 				return;
 			}
-			var rect = this.node.getBoundingClientRect();
-			this.queueZoom(Math.exp(-e.deltaY * WHEEL_FACTOR), e.clientX - rect.left, e.clientY - rect.top);
+			// queueZoom() takes client coordinates and makes them canvas-relative itself
+			this.queueZoom(Math.exp(-e.deltaY * WHEEL_FACTOR), e.clientX, e.clientY);
 			e.preventDefault();
 		},
 
