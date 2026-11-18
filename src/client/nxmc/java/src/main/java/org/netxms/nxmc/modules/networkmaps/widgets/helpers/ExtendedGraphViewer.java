@@ -467,26 +467,21 @@ public class ExtendedGraphViewer extends GraphViewer
                if (!objectDragCaptured)
                   return;
                objectDragCaptured = false;
-               if (!dragStarted)
-                  return;
-               dragStarted = false;
-
-               moveDraggedObjects(me.x, me.y); // where the button was released, not where the last drag event saw the cursor
-               if (getLayoutAlgorithm() instanceof ManualLayout)
+               if (dragStarted)
                {
-                  for(CGraphNode n : objectDragOrigins.keySet())
-                  {
-                     if (n.getFigure() instanceof ObjectFigure)
-                        moveCallback.onMove(((ObjectFigure)n.getFigure()).getMapElement());
-                  }
+                  moveDraggedObjects(me.x, me.y); // where the button was released, not where the last drag event saw the cursor
+                  finishObjectDrag();
                }
-               objectDragOrigins.clear();
-               unblockRefresh();
             }
 
             @Override
             public void mousePressed(MouseEvent me)
             {
+               // The previous drag's release never arrived (the mouse is still captured, so this press came here wherever it is)
+               if (dragStarted)
+                  finishObjectDrag();
+               objectDragCaptured = false;
+
                if ((me.button != 1) || !draggingEnabled)
                   return;
                org.eclipse.draw2d.geometry.Point p = new org.eclipse.draw2d.geometry.Point(me.x, me.y);
@@ -637,7 +632,8 @@ public class ExtendedGraphViewer extends GraphViewer
 	 */
 	public void unblockRefresh()
    {
-	   blockRefresh--;
+	   if (blockRefresh > 0) // resetRefreshBlock() may have run since the matching blockRefresh()
+	      blockRefresh--;
    }
 
 
@@ -1304,6 +1300,25 @@ public class ExtendedGraphViewer extends GraphViewer
       return showMapSize;
    }
 
+
+   /**
+    * Finish an object drag: save the moved objects (manual layout only) and allow map refresh again. Nodes disposed since the drag
+    * started (the view was switched to another map, which also resets the refresh block) are not saved.
+    */
+   private void finishObjectDrag()
+   {
+      dragStarted = false;
+      if (getLayoutAlgorithm() instanceof ManualLayout)
+      {
+         for(CGraphNode n : objectDragOrigins.keySet())
+         {
+            if (!n.isDisposed() && (n.getFigure() instanceof ObjectFigure))
+               moveCallback.onMove(((ObjectFigure)n.getFigure()).getMapElement());
+         }
+      }
+      objectDragOrigins.clear();
+      unblockRefresh();
+   }
 
    /**
     * Move the dragged objects by the cursor movement since the press (object layer coordinates, unscaled like node locations).
