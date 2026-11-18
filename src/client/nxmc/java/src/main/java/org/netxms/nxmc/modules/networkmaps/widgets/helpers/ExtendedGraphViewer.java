@@ -950,9 +950,9 @@ public class ExtendedGraphViewer extends GraphViewer
     * Centering is computed from the bounding box of the elements themselves, not from the canvas or
     * the background layer, because it is the elements the user is looking for.
     *
-    * Does nothing if the map has no elements yet, or if the control has not been laid out and the
-    * viewport therefore has no size yet. Map content arrives asynchronously, so both are normal
-    * transient states rather than errors.
+    * Does nothing if the map has no elements yet, if the graph layout has not placed them yet, or if
+    * the control has not been laid out and the viewport therefore has no size yet. Map content and
+    * layout arrive asynchronously, so all of these are normal transient states rather than errors.
     *
     * @return true if the viewport was actually centered, false if there was nothing to center on yet
     */
@@ -965,16 +965,31 @@ public class ExtendedGraphViewer extends GraphViewer
          return false; // not laid out yet - nothing sensible to center within
 
       org.eclipse.draw2d.geometry.Rectangle contentArea = null;
+      org.eclipse.draw2d.geometry.Point firstLocation = null;
+      boolean allAtOneLocation = true;
+      int nodeCount = 0;
       for(Object o : graph.getNodes())
       {
          if (!(o instanceof CGraphNode))
             continue;
          CGraphNode n = (CGraphNode)o;
-         org.eclipse.draw2d.geometry.Rectangle nodeArea = new org.eclipse.draw2d.geometry.Rectangle(n.getLocation(), n.getSize());
+         org.eclipse.draw2d.geometry.Point location = n.getLocation();
+         if (firstLocation == null)
+            firstLocation = location;
+         else if (!location.equals(firstLocation))
+            allAtOneLocation = false;
+         nodeCount++;
+         org.eclipse.draw2d.geometry.Rectangle nodeArea = new org.eclipse.draw2d.geometry.Rectangle(location, n.getSize());
          contentArea = (contentArea == null) ? nodeArea : contentArea.union(nodeArea);
       }
       if (contentArea == null)
          return false; // no content yet - it arrives asynchronously
+
+      // Nodes exist before the layout has placed them: Graph.applyLayout() defers to the first paint, and until it runs every
+      // node is still at its initial location. Centering on that would center on a phantom box and end the caller's retries.
+      // Several nodes sharing one location is that transient state, never a laid out map.
+      if ((nodeCount > 1) && allAtOneLocation)
+         return false;
 
       // Element coordinates are unscaled, the viewport works in scaled ones - same conversion the
       // search-and-reveal path uses.
