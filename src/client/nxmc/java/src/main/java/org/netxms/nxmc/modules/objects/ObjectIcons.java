@@ -20,6 +20,7 @@ package org.netxms.nxmc.modules.objects;
 
 import java.util.HashMap;
 import java.util.Map;
+import org.eclipse.swt.SWTException;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.graphics.ImageData;
 import org.eclipse.swt.widgets.Display;
@@ -28,12 +29,15 @@ import org.netxms.client.objects.Node;
 import org.netxms.nxmc.Registry;
 import org.netxms.nxmc.resources.ResourceManager;
 import org.netxms.nxmc.resources.SharedIcons;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Storage for object icons
  */
 public final class ObjectIcons
 {
+   private static final Logger logger = LoggerFactory.getLogger(ObjectIcons.class);
    /**
     * Initialize object icon storage
     * 
@@ -114,12 +118,12 @@ public final class ObjectIcons
       display.disposeExec(() -> {
          for(Image i : images.values())
             i.dispose();
-         nodeSwitch.dispose();
-         nodeRouter.dispose();
-         nodePrinter.dispose();
-         nodeWindows.dispose();
-         nodeLinux.dispose();
-         nodeFreeBSD.dispose();
+         disposeImage(nodeSwitch);
+         disposeImage(nodeRouter);
+         disposeImage(nodePrinter);
+         disposeImage(nodeWindows);
+         disposeImage(nodeLinux);
+         disposeImage(nodeFreeBSD);
       });
    }
 
@@ -133,7 +137,43 @@ public final class ObjectIcons
    private static Image createNodeIcon(Display display, String path)
    {
       ImageData imageData = ResourceManager.getImageData(path);
-      return new Image(display, imageData.scaledTo(16, 16));
+      if (imageData == null)
+      {
+         logger.warn("Cannot load node icon image from {}", path);
+         return null;
+      }
+
+      try
+      {
+         return new Image(display, imageData.scaledTo(16, 16));
+      }
+      catch(SWTException e)
+      {
+         logger.warn("Cannot create node icon image from {}", path, e);
+         return null;
+      }
+   }
+
+   /**
+    * Dispose image if it was successfully loaded.
+    *
+    * @param image image to dispose
+    */
+   private static void disposeImage(Image image)
+   {
+      if (image != null)
+         image.dispose();
+   }
+
+   /**
+    * Return a specialized node icon, or the generic node icon if loading failed.
+    *
+    * @param image specialized node icon
+    * @return specialized node icon or generic node icon
+    */
+   private Image getNodeIconOrDefault(Image image)
+   {
+      return (image != null) ? image : getImage(AbstractObject.OBJECT_NODE);
    }
 
    /**
@@ -146,21 +186,21 @@ public final class ObjectIcons
    {
       long capabilities = node.getCapabilities();
       if ((capabilities & Node.NC_IS_BRIDGE) != 0)
-         return nodeSwitch;
+         return getNodeIconOrDefault(nodeSwitch);
       if ((capabilities & Node.NC_IS_ROUTER) != 0)
-         return nodeRouter;
+         return getNodeIconOrDefault(nodeRouter);
       if ((capabilities & Node.NC_IS_PRINTER) != 0)
-         return nodePrinter;
+         return getNodeIconOrDefault(nodePrinter);
 
       String platformName = node.getPlatformName();
       if (platformName != null)
       {
          if (platformName.startsWith("windows"))
-            return nodeWindows;
+            return getNodeIconOrDefault(nodeWindows);
          if (platformName.startsWith("Linux"))
-            return nodeLinux;
+            return getNodeIconOrDefault(nodeLinux);
          if (platformName.startsWith("FreeBSD"))
-            return nodeFreeBSD;
+            return getNodeIconOrDefault(nodeFreeBSD);
       }
 
       return getImage(AbstractObject.OBJECT_NODE);
