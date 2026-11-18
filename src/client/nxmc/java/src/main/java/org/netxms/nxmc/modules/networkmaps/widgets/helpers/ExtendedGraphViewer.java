@@ -140,6 +140,7 @@ public class ExtendedGraphViewer extends GraphViewer
    private org.eclipse.draw2d.geometry.Point backgroundDragStartViewLocation = null;
    private org.eclipse.draw2d.geometry.Point objectDragLastPosition = null;
    private boolean objectPressed = false; // primary button went down on a map object (node or link), not on the background
+   private int figureZoomIndex = -1; // zoom level bucket the figures were last rebuilt for on a zoom change
    private boolean boxSelectionActive = false;
    private boolean boxSelectionAdditive = false; // modifier state latched at press time (RWT drag events carry no modifiers)
    private org.eclipse.draw2d.geometry.Point boxSelectionStart = null; // in map coordinates
@@ -351,6 +352,13 @@ public class ExtendedGraphViewer extends GraphViewer
          @Override
          public void zoomChanged(double zoom)
          {
+            // The zoom manager scales the figures itself. They depend on the zoom only through the label fonts, which change per
+            // zoom level bucket, so the graph is rebuilt only when the zoom moves into another bucket - not on every step of a
+            // continuous zoom (pinch, mouse wheel), which would rebuild every figure once per animation frame.
+            int zoomIndex = getCurrentZoomIndex();
+            if (zoomIndex == figureZoomIndex)
+               return;
+            figureZoomIndex = zoomIndex;
             ExtendedGraphViewer.this.refresh(true);
          }
       });
