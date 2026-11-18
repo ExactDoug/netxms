@@ -363,7 +363,8 @@
 		},
 
 		pointerDown : function(e) {
-			if (e.pointerType === "touch" || e.button !== 0 || !this.onCanvas(e.target)) {
+			// Shift+drag on the map background is box selection (ExtendedGraphViewer), not a pan
+			if (e.pointerType === "touch" || e.button !== 0 || e.shiftKey || !this.onCanvas(e.target)) {
 				return;
 			}
 			this.mousePanning = true;
