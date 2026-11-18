@@ -329,6 +329,12 @@
 			if (this.consumed || held >= LONGPRESS_JS_THRESHOLD) {
 				e.stopPropagation();
 			}
+			// A claimed gesture must not also become a click. Without this the browser follows the final touchend with
+			// compatibility mousedown/mouseup/click at the touch point - which is exactly where a long press has just opened
+			// the context menu, so the click lands on the menu and closes it.
+			if (this.consumed && e.cancelable) {
+				e.preventDefault();
+			}
 			if (e.touches && e.touches.length > 0) {
 				if (this.tracking) {
 					this.reseedRemainingTouches(e.touches);
