@@ -60,6 +60,32 @@
 	var MAX_STEP_IN = 4.0;
 	var MAX_STEP_OUT = 0.25;
 
+	/**
+	 * A pinch is shown by scaling the last rendered frame in the browser, and sent to the server only
+	 * once the fingers lift or have not moved for this long (ms). Sending every frame of a pinch kept
+	 * RAP busy for the whole gesture: each frame is a round trip plus a full canvas redraw, and RAP
+	 * drops touch input while it applies a response, so on a phone the pinch lagged and taps were lost.
+	 */
+	var PREVIEW_SETTLE_DELAY = 300;
+
+	/** Give up on a preview whose redraw never arrives, rather than leave the canvas scaled. */
+	var PREVIEW_TIMEOUT = 5000;
+
+	/**
+	 * Transforms of the viewport offset V (canvas pixels): V' = s * V + (tx, ty). On screen the same
+	 * transform moves a canvas point p to s * p - (tx, ty).
+	 */
+	var IDENTITY = { s : 1.0, tx : 0, ty : 0 };
+
+	/** a, then b */
+	var compose = function(a, b) {
+		return { s : b.s * a.s, tx : b.s * a.tx + b.tx, ty : b.s * a.ty + b.ty };
+	};
+
+	var isIdentity = function(t) {
+		return t.s === 1.0 && Math.abs(t.tx) < 0.5 && Math.abs(t.ty) < 0.5;
+	};
+
 	rap.registerTypeHandler("netxms.MapInput", {
 
 		factory : function(properties) {
@@ -114,6 +140,22 @@
 			return;
 		}
 		listenersInstalled = true;
+
+		// A previewed pinch stays on screen until the server's redraw for it has been applied. Requests are
+		// serialized, so the first render after the request carrying it is that redraw.
+		var forEachInstance = function(method) {
+			for (var id in instances) {
+				if (instances.hasOwnProperty(id)) {
+					instances[id][method]();
+				}
+			}
+		};
+		rap.on("send", function() {
+			forEachInstance("previewSent");
+		});
+		rap.on("render", function() {
+			forEachInstance("previewRendered");
+		});
 
 		var dispatch = function(method) {
 			return function(e) {
@@ -181,6 +223,16 @@
 		this.focalX = 0; // canvas-relative focal point sent with the zoom: that of the first zoom sample of the frame
 		this.focalY = 0;
 		this.zoomPending = false;
+
+		// Pinch preview. While previewing, the accumulated transform is shown as a CSS transform of the
+		// canvas instead of being sent. Committed transforms are tracked until their redraw is applied:
+		// first unsent (waiting for RAP's next request), then in flight (waiting for its response).
+		this.previewing = false;
+		this.previewCanvas = null;
+		this.previewUnsent = IDENTITY;
+		this.previewInFlight = [];
+		this.previewSettleTimer = null;
+		this.previewTimeoutTimer = null;
 
 		this.resetGesture();
 	};
@@ -281,6 +333,9 @@
 
 			if (e.touches.length > 1) {
 				this.cancelLongPress();
+				if (!this.previewing) {
+					this.startPreview();
+				}
 				this.pinching = true;
 				this.moved = true;
 				this.consumed = true;
@@ -346,7 +401,12 @@
 				}
 				return;
 			}
-			this.flush();
+			if (this.previewing) {
+				this.commitPreview();
+				this.previewing = false;
+			} else {
+				this.flush();
+			}
 			this.resetGesture();
 		},
 
@@ -471,20 +531,140 @@
 		},
 
 		schedule : function() {
+			var self = this;
+			if (this.previewing) {
+				if (this.previewSettleTimer !== null) {
+					clearTimeout(this.previewSettleTimer);
+				}
+				this.previewSettleTimer = setTimeout(function() {
+					self.previewSettleTimer = null;
+					self.commitPreview(); // fingers still down but not moving: render at this zoom now
+				}, PREVIEW_SETTLE_DELAY);
+			}
 			if (this.frame !== null) {
 				return;
 			}
-			var self = this;
 			this.frame = window.requestAnimationFrame(function() {
 				self.frame = null;
-				self.flush();
+				if (self.previewing) {
+					self.showPreview();
+				} else {
+					self.flush();
+				}
 			});
+		},
+
+		startPreview : function() {
+			// Whatever is still accumulated from before the pinch becomes part of the preview
+			if (this.frame !== null) {
+				window.cancelAnimationFrame(this.frame);
+				this.frame = null;
+			}
+			this.previewing = true;
+			var best = null;
+			var canvases = this.node.getElementsByTagName("canvas");
+			for (var i = 0; i < canvases.length; i++) {
+				var r = canvases[i].getBoundingClientRect();
+				if (best === null || r.width * r.height > best.area) {
+					best = { canvas : canvases[i], area : r.width * r.height };
+				}
+			}
+			this.previewCanvas = (best !== null) ? best.canvas : null;
+		},
+
+		/**
+		 * Show everything not yet in the rendered frame - in flight, unsent and still accumulating - as one
+		 * CSS transform of the canvas. The widget element clips it to the map's area.
+		 */
+		showPreview : function() {
+			var canvas = this.previewCanvas;
+			if (canvas === null) {
+				return;
+			}
+			var t = IDENTITY;
+			for (var i = 0; i < this.previewInFlight.length; i++) {
+				t = compose(t, this.previewInFlight[i]);
+			}
+			t = compose(t, this.previewUnsent);
+			if (this.previewing) {
+				t = compose(t, { s : this.scale, tx : this.transX, ty : this.transY });
+			}
+			if (isIdentity(t)) {
+				canvas.style.transform = "";
+				canvas.style.transformOrigin = "";
+				if (!this.previewing) {
+					this.previewCanvas = null;
+				}
+				return;
+			}
+			// Transform coordinates are relative to the canvas, gesture coordinates to the widget node, which is the
+			// canvas's offset parent. offsetLeft/Top are layout positions, unaffected by the transform itself.
+			var ox = canvas.offsetLeft;
+			var oy = canvas.offsetTop;
+			canvas.style.transformOrigin = "0 0";
+			canvas.style.transform = "matrix(" + t.s + ",0,0," + t.s + "," + ((t.s - 1) * ox - t.tx) + "," + ((t.s - 1) * oy - t.ty) + ")";
+		},
+
+		/**
+		 * Send the previewed transform. The preview stays on screen until the redraw for it has been applied.
+		 */
+		commitPreview : function() {
+			if (this.previewSettleTimer !== null) {
+				clearTimeout(this.previewSettleTimer);
+				this.previewSettleTimer = null;
+			}
+			if (this.frame !== null) {
+				window.cancelAnimationFrame(this.frame);
+				this.frame = null;
+			}
+			var accumulated = { s : this.scale, tx : this.transX, ty : this.transY };
+			if (isIdentity(accumulated)) {
+				this.showPreview();
+				return;
+			}
+			this.flush(true);
+			// What was sent is the accumulated transform less the sub-pixel remainder flush() kept back
+			this.previewUnsent = compose(this.previewUnsent, { s : accumulated.s, tx : accumulated.tx - this.transX, ty : accumulated.ty - this.transY });
+			this.showPreview();
+
+			var self = this;
+			if (this.previewTimeoutTimer !== null) {
+				clearTimeout(this.previewTimeoutTimer);
+			}
+			this.previewTimeoutTimer = setTimeout(function() {
+				self.previewTimeoutTimer = null;
+				self.previewUnsent = IDENTITY;
+				self.previewInFlight = [];
+				self.showPreview();
+			}, PREVIEW_TIMEOUT);
+		},
+
+		previewSent : function() {
+			if (!isIdentity(this.previewUnsent)) {
+				this.previewInFlight.push(this.previewUnsent);
+				this.previewUnsent = IDENTITY;
+			}
+		},
+
+		previewRendered : function() {
+			if (this.previewInFlight.length === 0) {
+				return;
+			}
+			this.previewInFlight.shift();
+			if (this.previewInFlight.length === 0 && isIdentity(this.previewUnsent) && this.previewTimeoutTimer !== null) {
+				clearTimeout(this.previewTimeoutTimer);
+				this.previewTimeoutTimer = null;
+			}
+			this.showPreview();
 		},
 
 		/**
 		 * Send at most one zoom and one pan notification per animation frame.
+		 *
+		 * @param unclamped true for a committed preview: the user has already seen the whole step, so it is
+		 *        not limited to MAX_STEP_IN/OUT (the server still clamps to the map's zoom range)
 		 */
-		flush : function() {
+		flush : function(unclamped) {
 			if (this.frame !== null) {
 				window.cancelAnimationFrame(this.frame);
 				this.frame = null;
@@ -494,7 +674,7 @@
 
 			var scale = 1.0;
 			if (this.zoomPending) {
-				scale = Math.min(MAX_STEP_IN, Math.max(MAX_STEP_OUT, this.scale));
+				scale = unclamped ? this.scale : Math.min(MAX_STEP_IN, Math.max(MAX_STEP_OUT, this.scale));
 				remote.notify("zoom", {
 					factor : scale,
 					x : this.focalX,
@@ -524,6 +704,15 @@
 
 		destroy : function() {
 			this.cancelLongPress();
+			if (this.previewSettleTimer !== null) {
+				clearTimeout(this.previewSettleTimer);
+			}
+			if (this.previewTimeoutTimer !== null) {
+				clearTimeout(this.previewTimeoutTimer);
+			}
+			if (this.previewCanvas !== null) {
+				this.previewCanvas.style.transform = "";
+			}
 			if (this.frame !== null) {
 				window.cancelAnimationFrame(this.frame);
 				this.frame = null;
