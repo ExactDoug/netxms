@@ -330,10 +330,32 @@
 				e.stopPropagation();
 			}
 			if (e.touches && e.touches.length > 0) {
+				if (this.tracking) {
+					this.reseedRemainingTouches(e.touches);
+				}
 				return;
 			}
 			this.flush();
 			this.resetGesture();
+		},
+
+		/**
+		 * Some fingers lifted while others stay down. Continue the gesture from where the remaining
+		 * fingers are now: the stored position and distance belong to the previous set of touches,
+		 * and measuring the next move against them makes the map jump by the distance between the
+		 * old and new reference points. The gesture stays claimed and long press stays disabled.
+		 */
+		reseedRemainingTouches : function(touches) {
+			if (touches.length > 1) {
+				var mid = this.midpoint(touches);
+				this.lastX = mid.x;
+				this.lastY = mid.y;
+				this.lastDistance = this.distance(touches);
+			} else {
+				this.startX = this.lastX = touches[0].clientX;
+				this.startY = this.lastY = touches[0].clientY;
+				this.lastDistance = 0;
+			}
 		},
 
 		openContextMenu : function(target, x, y) {
