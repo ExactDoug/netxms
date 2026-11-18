@@ -169,14 +169,18 @@
 		// animation frame. The coalescing MUST happen in the browser: each notify
 		// is a full client/server round trip, and every zoom change triggers a
 		// full viewer refresh on the server side.
+		//
+		// What is accumulated is one transform of the viewport offset V (canvas pixels):
+		// V' = scale * V + (transX, transY). Zoom and pan samples do not commute, so they cannot be
+		// accumulated separately (multiplied factors, latest focal point, summed pans) without moving
+		// the content away from under the fingers.
 		this.frame = null;
-		this.zoomFactor = 1.0;
-		this.zoomX = 0;
-		this.zoomY = 0;
+		this.scale = 1.0;
+		this.transX = 0;
+		this.transY = 0;
+		this.focalX = 0; // canvas-relative focal point sent with the zoom: that of the first zoom sample of the frame
+		this.focalY = 0;
 		this.zoomPending = false;
-		this.panX = 0;
-		this.panY = 0;
-		this.panPending = false;
 
 		this.resetGesture();
 	};
@@ -283,8 +287,9 @@
 				var distance = this.distance(e.touches);
 				var mid = this.midpoint(e.touches);
 				if (this.lastDistance > 0 && distance > 0) {
-					this.queueZoom(distance / this.lastDistance, mid.x, mid.y);
-					// A pinch that also translates should pan.
+					// The content that was under the previous midpoint must end up under the new one: zoom about
+					// the previous midpoint, then move by how far the midpoint moved.
+					this.queueZoom(distance / this.lastDistance, this.lastX, this.lastY);
 					this.queuePan(mid.x - this.lastX, mid.y - this.lastY);
 				}
 				this.lastDistance = distance;
@@ -441,10 +446,17 @@
 				return;
 			}
 			var rect = this.node.getBoundingClientRect();
-			this.zoomFactor = this.zoomFactor * factor;
-			this.zoomX = Math.round(x - rect.left);
-			this.zoomY = Math.round(y - rect.top);
-			this.zoomPending = true;
+			var fx = x - rect.left;
+			var fy = y - rect.top;
+			if (!this.zoomPending) {
+				this.focalX = Math.round(fx);
+				this.focalY = Math.round(fy);
+				this.zoomPending = true;
+			}
+			// Zoom about f: V' = factor * (V + f) - f
+			this.scale = this.scale * factor;
+			this.transX = factor * this.transX + (factor - 1) * fx;
+			this.transY = factor * this.transY + (factor - 1) * fy;
 			this.schedule();
 		},
 
@@ -452,9 +464,9 @@
 			if (dx === 0 && dy === 0) {
 				return;
 			}
-			this.panX += dx;
-			this.panY += dy;
-			this.panPending = true;
+			// Content follows the pointer, so the viewport offset moves the opposite way
+			this.transX -= dx;
+			this.transY -= dy;
 			this.schedule();
 		},
 
@@ -480,26 +492,34 @@
 
 			var remote = rap.getRemoteObject(this);
 
+			var scale = 1.0;
 			if (this.zoomPending) {
-				var factor = Math.min(MAX_STEP_IN, Math.max(MAX_STEP_OUT, this.zoomFactor));
+				scale = Math.min(MAX_STEP_IN, Math.max(MAX_STEP_OUT, this.scale));
 				remote.notify("zoom", {
-					factor : factor,
-					x : this.zoomX,
-					y : this.zoomY
+					factor : scale,
+					x : this.focalX,
+					y : this.focalY
 				});
-				this.zoomFactor = 1.0;
-				this.zoomPending = false;
 			}
 
-			if (this.panPending) {
+			// The server zooms about the focal point F and then pans by D: V' = scale * (V + F) - F - D.
+			// The D that makes this equal the accumulated transform is (scale - 1) * F - trans.
+			var dx = (scale - 1) * (this.zoomPending ? this.focalX : 0) - this.transX;
+			var dy = (scale - 1) * (this.zoomPending ? this.focalY : 0) - this.transY;
+			var sendX = Math.round(dx);
+			var sendY = Math.round(dy);
+			if (sendX !== 0 || sendY !== 0) {
 				remote.notify("pan", {
-					dx : Math.round(this.panX),
-					dy : Math.round(this.panY)
+					dx : sendX,
+					dy : sendY
 				});
-				this.panX = 0;
-				this.panY = 0;
-				this.panPending = false;
 			}
+
+			// Carry the sub-pixel remainder into the next frame instead of dropping it
+			this.scale = 1.0;
+			this.zoomPending = false;
+			this.transX = sendX - dx;
+			this.transY = sendY - dy;
 		},
 
 		destroy : function() {
