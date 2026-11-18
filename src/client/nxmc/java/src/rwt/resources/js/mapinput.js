@@ -90,6 +90,18 @@
 		return { s : b.s * a.s, tx : b.s * a.tx + b.tx, ty : b.s * a.ty + b.ty };
 	};
 
+	/**
+	 * Send whatever RAP has queued now. RAP otherwise holds outgoing events for 60 ms to batch them, which a
+	 * tap on the map pays on top of the round trip before the selection shows. Internal RAP API, so failure
+	 * just leaves the normal batched send in place.
+	 */
+	var sendNow = function() {
+		try {
+			rwt.remote.Connection.getInstance().sendImmediate(true);
+		} catch (err) {
+		}
+	};
+
 	var isIdentity = function(t) {
 		return t.s === 1.0 && Math.abs(t.tx) < 0.5 && Math.abs(t.ty) < 0.5;
 	};
@@ -185,6 +197,7 @@
 		document.addEventListener("pointermove", dispatch("pointerMove"), true);
 		document.addEventListener("pointerup", dispatch("pointerUp"), true);
 		document.addEventListener("pointercancel", dispatch("pointerUp"), true);
+		document.addEventListener("click", dispatch("clickCapture"), true);
 
 		// Safari raises these alongside the touch stream for a pinch, and they are what actually
 		// drive whole page zoom on iOS. Cancel them only over a map we own. Cancelling them
@@ -467,6 +480,17 @@
 			e.preventDefault();
 		},
 
+		/**
+		 * A click on the map - a mouse click, or the compatibility mouse events a browser makes from a tap - is
+		 * what selects objects. RAP turns it into MouseDown/MouseUp in its own handlers, after this one, and then
+		 * holds them for 60 ms; send them as soon as this event has been handled instead.
+		 */
+		clickCapture : function(e) {
+			if (this.onCanvas(e.target)) {
+				setTimeout(sendNow, 0);
+			}
+		},
+
 		pointerDown : function(e) {
 			// Shift+drag on the map background is box selection (ExtendedGraphViewer), not a pan
 			if (e.pointerType === "touch" || e.button !== 0 || e.shiftKey || !this.onCanvas(e.target)) {
@@ -683,11 +707,14 @@
 				this.showPreview();
 				return;
 			}
+			// Recorded before flush(): it sends at once, and RAP's "send" event - which moves unsent records in flight -
+			// fires inside it
+			this.previewUnsent.push(record);
 			this.flush(true);
-			// What was sent is the accumulated transform less the sub-pixel remainder flush() kept back
+			// What was sent is the accumulated transform less the sub-pixel remainder flush() kept back (the record may
+			// already be in flight; it is the same object)
 			record.tx -= this.transX;
 			record.ty -= this.transY;
-			this.previewUnsent.push(record);
 			this.showPreview();
 
 			var self = this;
@@ -761,6 +788,7 @@
 			var dy = (this.scale - 1) * (this.zoomPending ? this.focalY : 0) - this.transY;
 			var sendX = Math.round(dx);
 			var sendY = Math.round(dy);
+			var sent = true;
 			if (this.zoomPending) {
 				// One operation, so the server clamps the view to the map once, for the combined result
 				remote.notify("zoom", {
@@ -775,6 +803,11 @@
 					dx : sendX,
 					dy : sendY
 				});
+			} else {
+				sent = false;
+			}
+			if (sent) {
+				sendNow();
 			}
 
 			// Carry the sub-pixel remainder into the next frame instead of dropping it
