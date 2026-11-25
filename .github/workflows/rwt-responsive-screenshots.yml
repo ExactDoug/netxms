@@ -119,6 +119,45 @@ jobs:
             page.on('console', m => consoleMessages.push(`[${m.type()}] ${m.text()}`));
             page.on('pageerror', e => consoleMessages.push(`[pageerror] ${e.stack || e}`));
 
+            // Write diagnostics and exit non-zero; the always-run upload step still collects them.
+            const fail = async (reason) => {
+              consoleMessages.push(`[harness] FAILED: ${reason}`);
+              console.error(`capture failed: ${reason}`);
+              try { fs.writeFileSync('screenshots/browser.log', consoleMessages.join('\n')); } catch (e) {}
+              try { await page.screenshot({ path: 'screenshots/failure.png', fullPage: false }); } catch (e) {}
+              try { fs.writeFileSync('screenshots/page.html', await page.content()); } catch (e) {}
+              try { await browser.close(); } catch (e) {}
+              process.exit(1);
+            };
+
+            // Self-contained so it can run in the page (evaluate / waitForFunction).
+            // True when no login form is visible and the page has rendered a UI.
+            const shellReady = () => {
+              const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+              const all = Array.from(document.querySelectorAll('*'));
+              const loginUi = all.some(e => e.tagName === 'INPUT' && e.type === 'password' && vis(e)) ||
+                all.some(e => e.children.length === 0 && /^Log in$/i.test((e.textContent || '').trim()) && vis(e));
+              return !loginUi && all.filter(vis).length > 20;
+            };
+
+            // Locate the Close button inside the Welcome dialog only.
+            const findWelcome = () => page.evaluate(() => {
+              const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+              const all = Array.from(document.querySelectorAll('*'));
+              const title = all.find(e => e.children.length === 0 &&
+                /Welcome to NetXMS/i.test(e.textContent || '') && vis(e));
+              if (!title) return { present: false, center: null };
+              for (let n = title.parentElement; n; n = n.parentElement) {
+                const btn = Array.from(n.querySelectorAll('*')).find(e => e.children.length === 0 &&
+                  (e.textContent || '').trim() === 'Close' && vis(e));
+                if (btn) {
+                  const r = btn.getBoundingClientRect();
+                  return { present: true, center: { x: r.left + r.width / 2, y: r.top + r.height / 2 } };
+                }
+              }
+              return { present: true, center: null };
+            });
+
             await page.setViewportSize({ width: 1440, height: 900 });
             await page.goto(autoUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
             await page.waitForTimeout(15000);
@@ -135,32 +174,34 @@ jobs:
               await page.waitForTimeout(15000);
             }
 
+            // Require an authenticated UI (login form gone) before going further.
+            try {
+              await page.waitForFunction(shellReady, null, { timeout: 120000 });
+            } catch (e) {
+              await fail('login screen still visible or console UI not rendered (authentication did not succeed)');
+            }
+
             // Dismiss the "Welcome to NetXMS" release-notes modal so the captures
             // show the responsive shell instead of the dialog. RWT renders buttons
             // as styled divs and responds to REAL mouse events, not synthetic
             // element.click(); locate the "Close" element's center and click there.
+            // The dialog may legitimately be absent from the start.
             await page.waitForTimeout(5000);
-            let welcomeDismissed = false;
-            const closeCenter = await page.evaluate(() => {
-              const els = Array.from(document.querySelectorAll('*'));
-              const btn = els.find(e =>
-                (e.textContent || '').trim() === 'Close' &&
-                e.children.length === 0 &&
-                e.getBoundingClientRect().width > 0 &&
-                e.getBoundingClientRect().height > 0);
-              if (!btn) return null;
-              const r = btn.getBoundingClientRect();
-              return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-            }).catch(() => null);
-            if (closeCenter) {
-              await page.mouse.click(closeCenter.x, closeCenter.y);
+            let welcomeWasPresent = false;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              const w = await findWelcome().catch(() => ({ present: false, center: null }));
+              if (!w.present)
+                break;
+              welcomeWasPresent = true;
+              if (!w.center)
+                await fail('Welcome dialog is present but its Close button was not found');
+              await page.mouse.click(w.center.x, w.center.y);
               await page.waitForTimeout(3000);
-              welcomeDismissed = await page.evaluate(() =>
-                !Array.from(document.querySelectorAll('*')).some(e =>
-                  (e.textContent || '').trim() === 'Close' && e.children.length === 0)
-              ).catch(() => false);
             }
-            consoleMessages.push(`[harness] welcomeDismissed=${welcomeDismissed}`);
+            const stillWelcome = await findWelcome().catch(() => ({ present: true }));
+            if (stillWelcome.present)
+              await fail('Welcome dialog is still visible after attempting to close it');
+            consoleMessages.push(`[harness] welcomeWasPresent=${welcomeWasPresent} welcomeDismissed=true`);
 
             const captures = [
               ['wide-1440x900.png', 1440, 900],
@@ -172,6 +213,11 @@ jobs:
             for (const [name, width, height] of captures) {
               await page.setViewportSize({ width, height });
               await page.waitForTimeout(2500);
+              if (!(await page.evaluate(shellReady).catch(() => false)))
+                await fail(`login screen or empty UI at ${width}x${height} before capturing ${name}`);
+              const w = await findWelcome().catch(() => ({ present: true }));
+              if (w.present)
+                await fail(`Welcome dialog visible at ${width}x${height} before capturing ${name}`);
               await page.screenshot({ path: `screenshots/${name}`, fullPage: false });
             }
 
