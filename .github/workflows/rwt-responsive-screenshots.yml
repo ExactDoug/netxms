@@ -1,0 +1,319 @@
+name: RWT Responsive Shell Screenshots
+
+on:
+  push:
+    branches:
+      - feature/rwt-responsive-screenshot-ci
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rwt-responsive-screenshots-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Check out responsive shell branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build NetXMS Java client libraries
+        run: |
+          set -euxo pipefail
+          mkdir -p screenshots
+          mvn -B -f src/java-common/netxms-base/pom.xml -DskipTests install |& tee screenshots/netxms-base-build.log
+          mvn -B -f src/client/java/netxms-client/pom.xml -DskipTests install |& tee screenshots/netxms-client-build.log
+          git clone --depth 1 https://github.com/netxms/zest-rwt.git /tmp/zest-rwt
+          mvn -B -f /tmp/zest-rwt/pom.xml -DskipTests install |& tee screenshots/zest-rwt-build.log
+
+      - name: Build RWT web client
+        run: |
+          set -euxo pipefail
+          mkdir -p screenshots
+          mvn -B -f src/client/nxmc/java/pom.xml -Pweb -Dnetxms.build.disablePlatformProfile=true -DskipTests package |& tee screenshots/nxmc-web-build.log
+
+      - name: Start disposable NetXMS backend
+        run: |
+          set -euo pipefail
+          set -x
+          git clone --depth 1 https://github.com/netxms/docker.git /tmp/netxms-docker
+          cd /tmp/netxms-docker/deployment-example
+          cp .env.example .env
+          sed -i 's/^NETXMS_VERSION=.*/NETXMS_VERSION=latest/' .env
+          sed -i 's/48920:4701/4701:4701/' compose.yaml
+          grep -q '^NETXMS_VERSION=latest' .env
+          grep -q '4701:4701' compose.yaml
+          docker compose up -d db agent init server
+
+          backend_up=false
+          for i in $(seq 1 120); do
+            if (echo > /dev/tcp/127.0.0.1/4701) >/dev/null 2>&1; then
+              backend_up=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$backend_up" != true ]; then
+            echo 'NetXMS server did not open port 4701 within 240 s'
+            docker compose ps
+            docker compose logs --no-color server | tail -n 100
+            exit 1
+          fi
+
+          # Wait for the init container to finish so its log holds the admin password.
+          INIT_CID=$(docker compose ps -aq init)
+          test -n "$INIT_CID"
+          INIT_RC=$(timeout 300 docker wait "$INIT_CID") || { echo 'init container did not finish within 300 s'; docker compose logs --no-color server | tail -n 100; exit 1; }
+          if [ "$INIT_RC" != 0 ]; then
+            echo "init container exited with code $INIT_RC"
+            docker compose ps -a
+            docker compose logs --no-color server | tail -n 100
+            exit 1
+          fi
+
+          # Do not trace or echo the password; mask it before it is used anywhere.
+          set +x
+          docker compose logs --no-color init > /tmp/netxms-init.log
+          ADMIN_PASSWORD=$(sed -n 's/.*Password:[[:space:]]*//p' /tmp/netxms-init.log | tail -1 | tr -d '\r')
+          test -n "$ADMIN_PASSWORD"
+          echo "::add-mask::$ADMIN_PASSWORD"
+          echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$GITHUB_ENV"
+          set -x
+
+          UPDATED=$(docker compose exec -T db psql -U netxms -d netxms -tA -c 'UPDATE users SET flags = flags & ~8, grace_logins = 5 WHERE id = 1 RETURNING id;')
+          if ! echo "$UPDATED" | grep -qx 1; then
+            echo 'admin password-change flag update matched no row (users.id = 1)'
+            exit 1
+          fi
+          docker compose ps
+
+      - name: Start PR web client
+        run: |
+          set -euxo pipefail
+          WAR=$(find "$GITHUB_WORKSPACE/src/client/nxmc/java/target" -maxdepth 1 -name '*.war' -print -quit)
+          test -n "$WAR"
+          docker run -d --name nxmc-web --network host \
+            -v "$WAR:/usr/local/tomcat/webapps/ROOT.war:ro" \
+            tomcat:10.1-jdk17-temurin
+
+          for i in $(seq 1 120); do
+            if ! docker inspect -f '{{.State.Running}}' nxmc-web 2>/dev/null | grep -q true; then
+              docker logs nxmc-web
+              exit 1
+            fi
+            if curl -fsS --max-time 3 http://127.0.0.1:8080/nxmc-light.app >/dev/null 2>&1; then
+              echo "NXMC_URL=http://127.0.0.1:8080/nxmc-light.app" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs nxmc-web
+          exit 1
+
+      - name: Install Playwright
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/rwt-shot
+          cd /tmp/rwt-shot
+          npm init -y
+          npm install playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Capture authenticated responsive screenshots
+        run: |
+          set -euxo pipefail
+          mkdir -p screenshots
+          cat > /tmp/rwt-shot/capture.js <<'EOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({ ignoreHTTPSErrors: true });
+            const page = await context.newPage();
+            const baseUrl = process.env.NXMC_URL;
+            const password = process.env.ADMIN_PASSWORD;
+
+            const consoleMessages = [];
+            page.on('console', m => consoleMessages.push(`[${m.type()}] ${m.text()}`));
+            page.on('pageerror', e => consoleMessages.push(`[pageerror] ${e.stack || e}`));
+
+            // Write diagnostics and exit non-zero; the always-run upload step still collects them.
+            const fail = async (reason) => {
+              consoleMessages.push(`[harness] FAILED: ${reason}`);
+              console.error(`capture failed: ${reason}`);
+              try { fs.writeFileSync('screenshots/browser.log', consoleMessages.join('\n')); } catch (e) {}
+              try { await page.screenshot({ path: 'screenshots/failure.png', fullPage: false }); } catch (e) {}
+              try { fs.writeFileSync('screenshots/page.html', await page.content()); } catch (e) {}
+              try { await browser.close(); } catch (e) {}
+              process.exit(1);
+            };
+
+            // Self-contained so it can run in the page (evaluate / waitForFunction).
+            // True when no login form is visible and the page has rendered a UI.
+            const shellReady = () => {
+              const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+              const all = Array.from(document.querySelectorAll('*'));
+              const loginUi = all.some(e => e.tagName === 'INPUT' && e.type === 'password' && vis(e)) ||
+                all.some(e => e.children.length === 0 && /^Log in$/i.test((e.textContent || '').trim()) && vis(e));
+              return !loginUi && all.filter(vis).length > 20;
+            };
+
+            // Locate the Close button inside the Welcome dialog only.
+            const findWelcome = () => page.evaluate(() => {
+              const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+              const all = Array.from(document.querySelectorAll('*'));
+              const title = all.find(e => e.children.length === 0 &&
+                /Welcome to NetXMS/i.test(e.textContent || '') && vis(e));
+              if (!title) return { present: false, center: null };
+              for (let n = title.parentElement; n; n = n.parentElement) {
+                const btn = Array.from(n.querySelectorAll('*')).find(e => e.children.length === 0 &&
+                  (e.textContent || '').trim() === 'Close' && vis(e));
+                if (btn) {
+                  const r = btn.getBoundingClientRect();
+                  return { present: true, center: { x: r.left + r.width / 2, y: r.top + r.height / 2 } };
+                }
+              }
+              return { present: true, center: null };
+            });
+
+            await page.setViewportSize({ width: 1440, height: 900 });
+            // Credentials are typed into the login form; they never appear in a URL.
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+
+            const loginButton = page.getByText(/^Log in$/i).last();
+            try {
+              await loginButton.waitFor({ state: 'visible', timeout: 120000 });
+            } catch (e) {
+              await fail('login form did not appear');
+            }
+            const textInputs = page.locator('input:not([type="password"])');
+            const passwordInputs = page.locator('input[type="password"]');
+            if (await textInputs.count())
+              await textInputs.last().fill('admin');
+            if (await passwordInputs.count())
+              await passwordInputs.last().fill(password);
+            await loginButton.click();
+            await page.waitForTimeout(15000);
+
+            // Require an authenticated UI (login form gone) before going further.
+            try {
+              await page.waitForFunction(shellReady, null, { timeout: 120000 });
+            } catch (e) {
+              await fail('login screen still visible or console UI not rendered (authentication did not succeed)');
+            }
+
+            // Dismiss the "Welcome to NetXMS" release-notes modal so the captures
+            // show the responsive shell instead of the dialog. RWT renders buttons
+            // as styled divs and responds to REAL mouse events, not synthetic
+            // element.click(); locate the "Close" element's center and click there.
+            // The dialog may legitimately be absent from the start.
+            // A probe error (e.g. during navigation) means unknown, not absent: retry.
+            await page.waitForTimeout(5000);
+            let welcomeWasPresent = false;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              const w = await findWelcome().catch(() => null);
+              if (!w) {
+                await page.waitForTimeout(2000);
+                continue;
+              }
+              if (!w.present)
+                break;
+              welcomeWasPresent = true;
+              if (!w.center)
+                await fail('Welcome dialog is present but its Close button was not found');
+              await page.mouse.click(w.center.x, w.center.y);
+              await page.waitForTimeout(3000);
+            }
+            const stillWelcome = await findWelcome().catch(() => ({ present: true }));
+            if (stillWelcome.present)
+              await fail('Welcome dialog is still visible (or could not be probed) after attempting to close it');
+            consoleMessages.push(`[harness] welcomeWasPresent=${welcomeWasPresent} welcomeDismissed=${welcomeWasPresent ? 'true' : 'n/a (dialog absent)'}`);
+
+            const captures = [
+              ['wide-1440x900.png', 1440, 900],
+              ['compact-900x900.png', 900, 900],
+              ['narrow-390x844.png', 390, 844],
+              ['landscape-phone-844x390.png', 844, 390]
+            ];
+
+            for (const [name, width, height] of captures) {
+              await page.setViewportSize({ width, height });
+              await page.waitForTimeout(2500);
+              if (!(await page.evaluate(shellReady).catch(() => false)))
+                await fail(`login screen or empty UI at ${width}x${height} before capturing ${name}`);
+              const w = await findWelcome().catch(() => ({ present: true }));
+              if (w.present)
+                await fail(`Welcome dialog visible at ${width}x${height} before capturing ${name}`);
+              await page.screenshot({ path: `screenshots/${name}`, fullPage: false });
+            }
+
+            fs.writeFileSync('screenshots/browser.log', consoleMessages.join('\n'));
+            fs.writeFileSync('screenshots/page.html', await page.content());
+            await browser.close();
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          EOF
+          NODE_PATH=/tmp/rwt-shot/node_modules node /tmp/rwt-shot/capture.js
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          mkdir -p screenshots
+          # The init log contains the admin password, so it is deliberately not collected.
+          docker logs nxmc-web > screenshots/tomcat.log 2>&1 || true
+          if [ -d /tmp/netxms-docker/deployment-example ]; then
+            cd /tmp/netxms-docker/deployment-example
+            docker compose ps > "$GITHUB_WORKSPACE/screenshots/docker-ps.txt" 2>&1 || true
+            docker compose logs --no-color server > "$GITHUB_WORKSPACE/screenshots/netxms-server.log" 2>&1 || true
+          fi
+          find "$GITHUB_WORKSPACE/src/client/nxmc/java/target" -maxdepth 2 -type f -printf '%p %s bytes\n' > "$GITHUB_WORKSPACE/screenshots/build-files.txt" 2>/dev/null || true
+
+      - name: Scrub admin password from artifact
+        if: always()
+        run: |
+          set +x
+          if [ -n "${ADMIN_PASSWORD:-}" ]; then
+            python3 - <<'PY'
+          import glob, os, urllib.parse
+          pw = os.environ['ADMIN_PASSWORD']
+          variants = {pw, urllib.parse.quote(pw, safe=''), urllib.parse.quote_plus(pw)}
+          for path in glob.glob('screenshots/*.log') + glob.glob('screenshots/*.txt') + glob.glob('screenshots/*.html'):
+              try:
+                  with open(path, encoding='utf-8', errors='replace') as f:
+                      data = f.read()
+                  for v in variants:
+                      if v:
+                          data = data.replace(v, '***')
+                  with open(path, 'w', encoding='utf-8') as f:
+                      f.write(data)
+              except OSError:
+                  pass
+          PY
+          fi
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwt-responsive-shell-screenshots
+          path: screenshots
+          if-no-files-found: warn
