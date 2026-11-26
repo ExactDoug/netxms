@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: rwt-responsive-screenshots-${{ github.ref }}
+  group: rwt-responsive-screenshots-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -78,7 +78,13 @@ jobs:
           # Wait for the init container to finish so its log holds the admin password.
           INIT_CID=$(docker compose ps -aq init)
           test -n "$INIT_CID"
-          timeout 300 docker wait "$INIT_CID" >/dev/null
+          INIT_RC=$(timeout 300 docker wait "$INIT_CID") || { echo 'init container did not finish within 300 s'; docker compose logs --no-color server | tail -n 100; exit 1; }
+          if [ "$INIT_RC" != 0 ]; then
+            echo "init container exited with code $INIT_RC"
+            docker compose ps -a
+            docker compose logs --no-color server | tail -n 100
+            exit 1
+          fi
 
           # Do not trace or echo the password; mask it before it is used anywhere.
           set +x
@@ -213,10 +219,15 @@ jobs:
             // as styled divs and responds to REAL mouse events, not synthetic
             // element.click(); locate the "Close" element's center and click there.
             // The dialog may legitimately be absent from the start.
+            // A probe error (e.g. during navigation) means unknown, not absent: retry.
             await page.waitForTimeout(5000);
             let welcomeWasPresent = false;
-            for (let attempt = 0; attempt < 3; attempt++) {
-              const w = await findWelcome().catch(() => ({ present: false, center: null }));
+            for (let attempt = 0; attempt < 5; attempt++) {
+              const w = await findWelcome().catch(() => null);
+              if (!w) {
+                await page.waitForTimeout(2000);
+                continue;
+              }
               if (!w.present)
                 break;
               welcomeWasPresent = true;
@@ -227,7 +238,7 @@ jobs:
             }
             const stillWelcome = await findWelcome().catch(() => ({ present: true }));
             if (stillWelcome.present)
-              await fail('Welcome dialog is still visible after attempting to close it');
+              await fail('Welcome dialog is still visible (or could not be probed) after attempting to close it');
             consoleMessages.push(`[harness] welcomeWasPresent=${welcomeWasPresent} welcomeDismissed=true`);
 
             const captures = [
@@ -270,6 +281,29 @@ jobs:
             docker compose logs --no-color server > "$GITHUB_WORKSPACE/screenshots/netxms-server.log" 2>&1 || true
           fi
           find "$GITHUB_WORKSPACE/src/client/nxmc/java/target" -maxdepth 2 -type f -printf '%p %s bytes\n' > "$GITHUB_WORKSPACE/screenshots/build-files.txt" 2>/dev/null || true
+
+      - name: Scrub admin password from artifact
+        if: always()
+        run: |
+          set +x
+          if [ -n "${ADMIN_PASSWORD:-}" ]; then
+            python3 - <<'PY'
+          import glob, os, urllib.parse
+          pw = os.environ['ADMIN_PASSWORD']
+          variants = {pw, urllib.parse.quote(pw, safe=''), urllib.parse.quote_plus(pw)}
+          for path in glob.glob('screenshots/*.log') + glob.glob('screenshots/*.txt') + glob.glob('screenshots/*.html'):
+              try:
+                  with open(path, encoding='utf-8', errors='replace') as f:
+                      data = f.read()
+                  for v in variants:
+                      if v:
+                          data = data.replace(v, '***')
+                  with open(path, 'w', encoding='utf-8') as f:
+                      f.write(data)
+              except OSError:
+                  pass
+          PY
+          fi
 
       - name: Upload screenshots and logs
         if: always()
