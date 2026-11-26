@@ -244,7 +244,7 @@ jobs:
             const stillWelcome = await findWelcome().catch(() => ({ present: true }));
             if (stillWelcome.present)
               await fail('Welcome dialog is still visible (or could not be probed) after attempting to close it');
-            consoleMessages.push(`[harness] welcomeWasPresent=${welcomeWasPresent} welcomeDismissed=true`);
+            consoleMessages.push(`[harness] welcomeWasPresent=${welcomeWasPresent} welcomeDismissed=${welcomeWasPresent ? 'true' : 'n/a (dialog absent)'}`);
 
             const captures = [
               ['wide-1440x900.png', 1440, 900],
