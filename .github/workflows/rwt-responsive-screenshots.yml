@@ -9,6 +9,13 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: rwt-responsive-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   screenshots:
     runs-on: ubuntu-latest
@@ -42,25 +49,45 @@ jobs:
 
       - name: Start disposable NetXMS backend
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          set -x
           git clone --depth 1 https://github.com/netxms/docker.git /tmp/netxms-docker
           cd /tmp/netxms-docker/deployment-example
           cp .env.example .env
           sed -i 's/^NETXMS_VERSION=.*/NETXMS_VERSION=latest/' .env
           sed -i 's/48920:4701/4701:4701/' compose.yaml
+          grep -q '^NETXMS_VERSION=latest' .env
+          grep -q '4701:4701' compose.yaml
           docker compose up -d db agent init server
 
+          backend_up=false
           for i in $(seq 1 120); do
             if (echo > /dev/tcp/127.0.0.1/4701) >/dev/null 2>&1; then
+              backend_up=true
               break
             fi
             sleep 2
           done
+          if [ "$backend_up" != true ]; then
+            echo 'NetXMS server did not open port 4701 within 240 s'
+            docker compose ps
+            docker compose logs --no-color server | tail -n 100
+            exit 1
+          fi
 
-          docker compose logs --no-color init | tee /tmp/netxms-init.log
+          # Wait for the init container to finish so its log holds the admin password.
+          INIT_CID=$(docker compose ps -aq init)
+          test -n "$INIT_CID"
+          timeout 300 docker wait "$INIT_CID" >/dev/null
+
+          # Do not trace or echo the password; mask it before it is used anywhere.
+          set +x
+          docker compose logs --no-color init > /tmp/netxms-init.log
           ADMIN_PASSWORD=$(sed -n 's/.*Password:[[:space:]]*//p' /tmp/netxms-init.log | tail -1 | tr -d '\r')
           test -n "$ADMIN_PASSWORD"
+          echo "::add-mask::$ADMIN_PASSWORD"
           echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$GITHUB_ENV"
+          set -x
 
           docker compose exec -T db psql -U netxms -d netxms -c 'UPDATE users SET flags = flags & ~8, grace_logins = 5 WHERE id = 1;'
           docker compose ps
@@ -235,7 +262,7 @@ jobs:
         if: always()
         run: |
           mkdir -p screenshots
-          cp /tmp/netxms-init.log screenshots/netxms-init.log 2>/dev/null || true
+          # The init log contains the admin password, so it is deliberately not collected.
           docker logs nxmc-web > screenshots/tomcat.log 2>&1 || true
           if [ -d /tmp/netxms-docker/deployment-example ]; then
             cd /tmp/netxms-docker/deployment-example
