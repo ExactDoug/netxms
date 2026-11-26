@@ -95,7 +95,11 @@ jobs:
           echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> "$GITHUB_ENV"
           set -x
 
-          docker compose exec -T db psql -U netxms -d netxms -c 'UPDATE users SET flags = flags & ~8, grace_logins = 5 WHERE id = 1;'
+          UPDATED=$(docker compose exec -T db psql -U netxms -d netxms -tA -c 'UPDATE users SET flags = flags & ~8, grace_logins = 5 WHERE id = 1 RETURNING id;')
+          if ! echo "$UPDATED" | grep -qx 1; then
+            echo 'admin password-change flag update matched no row (users.id = 1)'
+            exit 1
+          fi
           docker compose ps
 
       - name: Start PR web client
@@ -145,8 +149,6 @@ jobs:
             const page = await context.newPage();
             const baseUrl = process.env.NXMC_URL;
             const password = process.env.ADMIN_PASSWORD;
-            const separator = baseUrl.includes('?') ? '&' : '?';
-            const autoUrl = `${baseUrl}${separator}login=admin&password=${encodeURIComponent(password)}&auto=1`;
 
             const consoleMessages = [];
             page.on('console', m => consoleMessages.push(`[${m.type()}] ${m.text()}`));
@@ -192,20 +194,23 @@ jobs:
             });
 
             await page.setViewportSize({ width: 1440, height: 900 });
-            await page.goto(autoUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-            await page.waitForTimeout(15000);
+            // Credentials are typed into the login form; they never appear in a URL.
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
             const loginButton = page.getByText(/^Log in$/i).last();
-            if (await loginButton.isVisible().catch(() => false)) {
-              const textInputs = page.locator('input:not([type="password"])');
-              const passwordInputs = page.locator('input[type="password"]');
-              if (await textInputs.count())
-                await textInputs.last().fill('admin');
-              if (await passwordInputs.count())
-                await passwordInputs.last().fill(password);
-              await loginButton.click();
-              await page.waitForTimeout(15000);
+            try {
+              await loginButton.waitFor({ state: 'visible', timeout: 120000 });
+            } catch (e) {
+              await fail('login form did not appear');
             }
+            const textInputs = page.locator('input:not([type="password"])');
+            const passwordInputs = page.locator('input[type="password"]');
+            if (await textInputs.count())
+              await textInputs.last().fill('admin');
+            if (await passwordInputs.count())
+              await passwordInputs.last().fill(password);
+            await loginButton.click();
+            await page.waitForTimeout(15000);
 
             // Require an authenticated UI (login form gone) before going further.
             try {
